@@ -1,0 +1,977 @@
+#+title: My Emacs Configuration
+#+startup: indent show2levels
+
+* Bootstrap
+** Lexical binding
+[[https://www.gnu.org/software/emacs/manual/html_node/elisp/Lexical-Binding.html][Lexical Binding]]
+#+begin_src emacs-lisp :lexical t
+  ;; -*- lexical-binding: t; -*-
+#+end_src
+
+** Core
+*** Settings
+One of the things like using [[https://doomemacs.org/][Doom Emacs]] is that all non-versioned files (caches, worskapces, runtime data) went under `.local`.
+Let's do the same and define `my/local-dir` that we'll use all across the board.
+#+begin_src emacs-lisp :lexical t
+  (defvar my/local-dir (concat user-emacs-directory ".local/") "Local state directory")
+#+end_src
+
+#+begin_src emacs-lisp :lexical t
+  (setq confirm-kill-emacs nil) ;; No ask when quit Emacs
+  (setq-default indent-tabs-mode nil) ;; Use backspace instead of tab
+  (setq electric-indent-inhibit t)
+  (setq inhibit-message nil) ;; Changing that makes evil-search '/' invisible!
+  (setq inhibit-startup-message t)
+  (set-face-attribute 'default nil :height 150)
+  (setq warning-minimum-level :emergency)
+  (setq visible-bell nil) ;; Disable the annoying bell
+  (setq ring-bell-function 'ignore)
+#+end_src
+
+**** Fonts
+The configured font needs to support the unicode characters that are used by the modeline.
+The default font is good enough so let's not define additonal configuration here.
+#+begin_src emacs-lisp :lexical t
+(push '(font . "IBM Plex Mono-18") default-frame-alist)
+(set-face-font 'default "IBM Plex Mono-18")
+(set-face-font 'variable-pitch "DejaVu Sans")
+(copy-face 'default 'fixed-pitch)
+#+end_src
+
+**** Display line number
+#+begin_src emacs-lisp :lexical t
+  (use-package display-line-numbers
+    ;; Show line numbers
+    :hook ((prog-mode conf-mode text-mode) . display-line-numbers-mode)
+    :custom
+    ;; Relative line numbering
+    (display-line-numbers-type 'relative)
+    ;; Width for line numbers
+    (display-line-numbers-width 4)
+    ;; Display absolute line numbers in narrowed regions
+    (display-line-numbers-widen t))
+#+end_src
+
+**** Smooth Scrolling
+#+begin_src emacs-lisp :lexical t
+  (use-package pixel-scroll
+    ;; :after minemacs-loaded
+    :demand t
+    :custom
+    ;; Better scrolling on Emacs29+, specially on a touchpad
+    (pixel-scroll-precision-use-momentum t)
+    :config
+    ;; Scroll pixel by pixel, in Emacs29+ there is a more pricise mode way to scroll
+    (if (>= emacs-major-version 29)
+        (pixel-scroll-precision-mode 1)
+      (pixel-scroll-mode 1)))
+#+end_src
+
+*** Package Manager
+**** Elpaca
+Elpaca is an elisp package manager. It allows users to find, install, update, and remove third-party packages for Emacs. It is a replacement for the built-in Emacs package manager, package.el
+Github: https://github.com/progfolio/elpaca
+***** Installer 
+#+begin_src emacs-lisp :lexical t
+  (defvar elpaca-installer-version 0.5)
+  (defvar elpaca-directory (expand-file-name "elpaca/" my/local-dir))
+  (defvar elpaca-builds-directory (expand-file-name "builds/" elpaca-directory))
+  (defvar elpaca-repos-directory (expand-file-name "repos/" elpaca-directory))
+  (defvar elpaca-order '(elpaca :repo "https://github.com/progfolio/elpaca.git"
+                                :ref nil
+                                :files (:defaults (:exclude "extensions"))
+                                :build (:not elpaca--activate-package)))
+  (let* ((repo  (expand-file-name "elpaca/" elpaca-repos-directory))
+         (build (expand-file-name "elpaca/" elpaca-builds-directory))
+         (order (cdr elpaca-order))
+         (default-directory repo))
+    (add-to-list 'load-path (if (file-exists-p build) build repo))
+    (unless (file-exists-p repo)
+      (make-directory repo t)
+      (when (< emacs-major-version 28) (require 'subr-x))
+      (condition-case-unless-debug err
+          (if-let ((buffer (pop-to-buffer-same-window "*elpaca-bootstrap*"))
+                   ((zerop (call-process "git" nil buffer t "clone"
+                                         (plist-get order :repo) repo)))
+                   ((zerop (call-process "git" nil buffer t "checkout"
+                                         (or (plist-get order :ref) "--"))))
+                   (emacs (concat invocation-directory invocation-name))
+                   ((zerop (call-process emacs nil buffer nil "-Q" "-L" "." "--batch"
+                                         "--eval" "(byte-recompile-directory \".\" 0 'force)")))
+                   ((require 'elpaca))
+                   ((elpaca-generate-autoloads "elpaca" repo)))
+              (kill-buffer buffer)
+            (error "%s" (with-current-buffer buffer (buffer-string))))
+        ((error) (warn "%s" err) (delete-directory repo 'recursive))))
+    (unless (require 'elpaca-autoloads nil t)
+      (require 'elpaca)
+      (elpaca-generate-autoloads "elpaca" repo)
+      (load "./elpaca-autoloads")))
+  (add-hook 'after-init-hook #'elpaca-process-queues)
+  (elpaca `(,@elpaca-order))
+#+end_src
+
+***** use-package
+Configure elpace `use-package` integration so that the rest of the configuration just uses `use-package`.
+#+begin_src emacs-lisp :lexical t
+  (elpaca elpaca-use-package
+    ;; Enable :elpaca use-package keyword.
+    (elpaca-use-package-mode)
+    ;; Assume :elpaca t unless otherwise specified.
+    (setq elpaca-use-package-by-default t))
+
+  ;; Block until current queue processed.
+  (elpaca-wait)
+#+end_src
+
+***** use-feature
+There are cases where we want to use `use-package` with internal packages.
+In these cases `:elpaca nil` needs to be set. Let's create a macro `use-feature`
+that combines `use-package` with `:elpaca nil` nicely.
+
+Source: https://github.com/progfolio/.emacs.d/blob/master/init.org
+#+begin_src emacs-lisp :lexical t
+  (defmacro use-feature (name &rest args)
+    "Like `use-package' but accounting for asynchronous installation.
+    NAME and ARGS are in `use-package'."
+    (declare (indent defun))
+    `(use-package ,name
+       :elpaca nil
+       ,@args))
+#+end_src
+
+**** COMMENT MELPA
+Sometimes I want to use package-xxx commands and query MELPA.
+Since I don't do that often I expect this to be commented out most of the time.
+
+#+begin_src emacs-lisp
+  (require 'package)
+  (add-to-list 'package-archives
+    '("MELPA" .
+      "http://melpa.org/packages/"))
+  (package-initialize)
+#+end_src
+* Lib
+** Keybinding Macro
+#+begin_src emacs-lisp :lexical t
+;;; Keybinding macros
+;;; =================
+
+;; PERF+HACK: At some point, MinEmacs startup become too slow, specially when
+;; initializing `general' and `evil'. After trying several configurations, I
+;; figured out that deferring `general' solves the issue. However, deferring
+;; `general' means that we cannot define the keybindings when loading other
+;; packages, i.e. before `general' gets loaded and the MinEmacs definers (i.e.
+;; `+minemacs--internal-map!', `+minemacs--internal-map-local!', ...) are made
+;; available. We overcome this by defining these macros to define the
+;; keybindings by wrapping the actual definition in a `with-eval-after-load'
+;; block to be evaluated only after `general' gets loaded and configured and the
+;; definers are ready (See `me-keybindings').
+(defmacro +map! (&rest args)
+  "A wrapper around `+minemacs--internal-map!'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (+leader-key! ,@args)))
+
+(defmacro +map-local! (&rest args)
+  "A wrapper around `+minemacs--internal-map-local!'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (+localleader-key! ,@args)))
+
+;; Wrappers around `general's VIM like definers, needs `general-evil-setup' to
+;; be executed (See `me-keybindings')
+(defmacro +nmap! (&rest args)
+  "A wrapper around `general-nmap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-nmap ,@args)))
+
+(defmacro +vmap! (&rest args)
+  "A wrapper around `general-vmap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-vmap ,@args)))
+
+(defmacro +mmap! (&rest args)
+  "A wrapper around `general-mmap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-mmap ,@args)))
+
+(defmacro +imap! (&rest args)
+  "A wrapper around `general-imap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-imap ,@args)))
+
+(defmacro +emap! (&rest args)
+  "A wrapper around `general-emap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-emap ,@args)))
+
+(defmacro +omap! (&rest args)
+  "A wrapper around `general-omap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-omap ,@args)))
+
+(defmacro +rmap! (&rest args)
+  "A wrapper around `general-rmap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-rmap ,@args)))
+
+(defmacro +iemap! (&rest args)
+  "A wrapper around `general-iemap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-iemap ,@args)))
+
+(defmacro +nvmap! (&rest args)
+  "A wrapper around `general-nvmap'.
+It is deferred until `general' gets loaded and configured."
+  (declare (indent defun))
+  `(with-eval-after-load 'me-general-ready
+    (general-nvmap ,@args)))
+#+end_src
+
+** +add-hook!
+#+begin_src emacs-lisp :lexical t
+(defmacro +add-hook! (hooks &rest rest)
+  "A convenience macro for adding N functions to M hooks.
+
+This macro accepts, in order:
+
+  1. The mode(s) or hook(s) to add to. This is either an unquoted mode, an
+     unquoted list of modes, a quoted hook variable or a quoted list of hook
+     variables.
+  2. Optional properties :local, :append, and/or :depth [N], which will make the
+     hook buffer-local or append to the list of hooks (respectively),
+  3. The function(s) to be added: this can be a quoted function, a quoted list
+     thereof, a list of `defun' or `cl-defun' forms, or arbitrary forms (will
+     implicitly be wrapped in a lambda).
+
+If the hook function should receive an argument (like in
+`enable-theme-functions'), the `args' variable can be expanded in the forms
+
+  (+add-hook! \\='enable-theme-functions
+    (message \"Enabled theme: %s\" (car args)))
+
+\(fn HOOKS [:append :local [:depth N]] FUNCTIONS-OR-FORMS...)"
+  (declare (indent (lambda (indent-point state)
+                     (goto-char indent-point)
+                     (when (looking-at-p "\\s-*(")
+                       (lisp-indent-defform state indent-point))))
+           (debug t))
+  (let* ((hook-forms (+resolve-hook-forms hooks))
+         (func-forms ())
+         (defn-forms ())
+         append-p local-p remove-p depth)
+    (while (keywordp (car rest))
+      (pcase (pop rest)
+        (:append (setq append-p t))
+        (:depth  (setq depth (pop rest)))
+        (:local  (setq local-p t))
+        (:remove (setq remove-p t))))
+    (while rest
+      (let* ((next (pop rest))
+             (first (car-safe next)))
+        (push (cond ((memq first '(function nil))
+                     next)
+                    ((eq first 'quote)
+                     (let ((quoted (cadr next)))
+                       (if (atom quoted)
+                           next
+                         (when (cdr quoted)
+                           (setq rest (cons (list first (cdr quoted)) rest)))
+                         (list first (car quoted)))))
+                    ((memq first '(defun cl-defun))
+                     (push next defn-forms)
+                     (list 'function (cadr next)))
+                    ((prog1 `(lambda (&rest args) ,@(cons next rest))
+                       (setq rest nil))))
+              func-forms)))
+    `(progn
+       ,@defn-forms
+       (dolist (hook (nreverse ',hook-forms))
+        (dolist (func (list ,@func-forms))
+         ,(if remove-p
+              `(remove-hook hook func ,local-p)
+            `(add-hook hook func ,(or depth append-p) ,local-p)))))))
+#+end_src
+* Packages
+** Evil (Like vim)
+#+begin_quote
+Evil is an extensible vi layer for Emacs. It emulates the main features of Vim, and provides facilities for writing custom extensions.
+
+https://github.com/emacs-evil/evil
+#+end_quote
+
+#+begin_src emacs-lisp :lexical t :noweb yes
+(use-package evil
+  :demand t
+  :preface (setq evil-want-keybinding nil)
+  :custom
+  (evil-symbol-word-search t "search by symbol with * and #.")
+  (evil-shift-width 2 "Same behavior for vim's '<' and '>' commands")
+  (evil-want-C-i-jump t)
+  (evil-complete-all-buffers nil)
+  (evil-want-integration t)
+  (evil-search-module 'evil-search "use vim-like search instead of 'isearch")
+  (evil-undo-system 'undo-redo)
+  :config
+  ;;I want Emacs regular mouse click behavior
+  (define-key evil-motion-state-map [down-mouse-1] nil)
+  <<+evil-kill-minibuffer>>
+  (evil-mode))
+#+end_src
+
+*** Evil mini-buffer bug
+:PROPERTIES:
+:header-args: :tangle no :noweb-ref +evil-kill-minibuffer
+:END:
+Sometimes evil gets stuck and doubles the 'd' and 'c' keys among others.
+This has something to do with the mini-buffer according to this Spacemacs issue:
+
+https://github.com/syl20bnr/spacemacs/issues/10410
+
+Apparently this is a workaround:
+
+#+begin_src emacs-lisp :lexical t
+(defun +evil-kill-minibuffer ()
+  (interactive)
+  (when (windowp (active-minibuffer-window))
+    (evil-ex-search-exit)))
+
+(add-hook 'mouse-leave-buffer-hook #'+evil-kill-minibuffer)
+#+end_src
+
+Not sure why that hook is appropriate, but calling =evil-ex-search-exit= manually solves the issue as well.
+*** evil-collection
+#+begin_quote
+This is a collection of Evil bindings for the parts of Emacs that Evil does not cover properly by default.
+
+https://github.com/emacs-evil/evil-collection
+#+end_quote
+#+begin_src emacs-lisp :lexical t
+(use-package evil-collection
+  :elpaca (:remotes ("origin"
+                     ("fork" :repo "progfolio/evil-collection")))
+  :after (evil)
+  :config (evil-collection-init)
+  :custom
+  (evil-collection-elpaca-want-g-filters nil)
+  (evil-collection-setup-minibuffer t "Add evil bindings to minibuffer")
+  (evil-collection-ement-want-auto-retro t))
+#+end_src
+
+*** evil-snipe
+#+begin_src emacs-lisp :lexical t
+  (use-package evil-snipe
+    :after (evil)
+    :config
+    (evil-snipe-mode +1)
+    (evil-snipe-override-mode +1)
+    :custom
+    (evil-snipe-scope 'buffer)
+    (evil-snipe-smart-case t)
+    (evil-snipe-auto-scroll t))
+#+end_src
+
+*** evil-nerd-commenter
+#+begin_src emacs-lisp :lexical t
+(use-package evil-nerd-commenter
+  :commands evilnc-comment-operator
+  :init
+  (+nvmap!
+    "gc" #'evilnc-comment-operator
+    "gC" #'evilnc-copy-and-comment-operator))
+#+end_src
+
+** General (key-bindings)
+#+begin_quote
+general.el provides a more convenient method for binding keys in emacs (for both evil and non-evil users).
+
+https://github.com/noctuid/general.el#about
+#+end_quote
+
+Load general before the remaining packages so they can make use of the ~:general~ keyword in their declarations.
+#+begin_src emacs-lisp :lexical t :noweb yes
+  (use-package general
+    :after (evil)
+    :demand t
+    :config
+    (general-override-mode)
+    (general-auto-unbind-keys)
+    (general-evil-setup t) ;; needed for nmap, ...
+    <<general-config>>)
+  (elpaca-wait)
+#+end_src
+
+*** config
+:PROPERTIES:
+:header-args: :tangle no :noweb-ref general-config
+:END:
+The global definer allows me to use a leader key in most states.
+#+begin_src emacs-lisp :lexical t
+(general-create-definer +leader-key!
+ :keymaps 'override
+ :states '(insert normal hybrid motion visual operator emacs)
+ :prefix "SPC"
+ :global-prefix "S-SPC")
+#+end_src
+
+We define a global-leader definer to access major-mode specific bindings:
+#+begin_src emacs-lisp :lexical t
+(general-create-definer +localleader-key!
+  :keymaps 'override
+  :states '(insert normal hybrid motion visual operator)
+  :prefix "SPC m"
+  :non-normal-prefix "S-SPC m"
+  "" '( :ignore t
+        :which-key
+        (lambda (arg)
+          (cons (cadr (split-string (car arg) " "))
+                (replace-regexp-in-string "-mode$" "" (symbol-name major-mode))))))
+#+end_src
+
+*** Bind
+#+begin_src emacs-lisp :lexical t
+  (+leader-key!
+    ;; ====== Top level functions ======
+    "SPC"  '(execute-extended-command :wk "M-x")
+    ">"    '(switch-to-next-buffer :wk "Next buffer")
+    "<"    '(switch-to-prev-buffer :wk "Previous buffer")
+    ";"    '(pp-eval-expression :wk "Eval expression")
+    ":"    #'project-find-file
+    "X"    #'org-capture
+    "u"    '(universal-argument :wk "C-u")
+    "C"    #'universal-coding-system-argument
+    "O"    #'other-window-prefix
+    "!"   'shell-command
+    "z"   '((lambda (local) (interactive "p")
+              (unless repeat-mode (repeat-mode))
+              (let ((local current-prefix-arg)
+                    (current-prefix-arg nil))
+                (call-interactively (if local #'text-scale-adjust #'global-text-scale-adjust))))
+            :which-key "zoom")
+
+    ;; ====== Quit/Session ======
+    "q"    '(nil :wk "quit/session")
+    "qq"   #'save-buffers-kill-terminal
+    "qQ"   #'kill-emacs
+    "qS"   #'server-start
+    "qR"   #'recover-session
+    "qd"   #'desktop-read
+    "qD"   #'desktop-lazy-complete
+    "qs"   #'desktop-save
+
+    ;; ====== Files ======
+    "f"    '(nil :wk "file")
+    "fS"   '(write-file :wk "Save as ...")
+    "fd"   #'+delete-this-file
+    "fD"   #'+delete-this-file-and-buffer
+    "fF"   #'+sudo-find-file ; will be overriten with `sudo-edit-find-file'
+    "fu"   #'+sudo-this-file ; will be overriten with `sudo-edit'
+    "fi"   #'auto-insert
+    "fR"   #'+move-this-file
+    "ff"   #'find-file
+    "fs"   #'save-buffer
+    "ft"   #'recover-this-file
+    "fT"   #'recover-file
+    "fy"   #'+yank-this-file-name
+    ;;"fE"   `(,(+cmdfy! (dired (or minemacs-config-dir minemacs-root-dir)))
+    ;;          :wk "User config directory")
+
+    ;; ====== Applications (Open) ======
+    "o"    '(nil :wk "open")
+    "o-"   '(dired :wk "Dired") ;; Will be overwritten if dirvish is used
+    )
+#+end_src
+
+*** Provide me-general-ready
+#+begin_src emacs-lisp :lexical t
+(provide 'me-general-ready)
+#+end_src
+
+** UI
+*** Theme
+I prefer to keep my themes in a sub-folder of =~/.emacs.d=
+#+begin_src emacs-lisp :lexical t
+(setq custom-theme-directory "~/.emacs.d/themes/")
+#+end_src
+
+I'm working on a theme that is readable and attractive.
+
+#+begin_src emacs-lisp :lexical t
+(defvar +theme 'mine "Default theme.")
+(require 'cl-lib)
+(require 'custom)
+;; remove synthetic use-package theme
+(unless (remq 'use-package custom-enabled-themes) (load-theme +theme t))
+#+end_src
+
+#+begin_src emacs-lisp :lexical t :tangle no
+(use-package doom-themes
+  :config
+  (when (display-graphic-p)
+    (load-theme 'doom-one t)(setq mode-line-format nil)))
+#+end_src
+
+*** Rainbow
+#+begin_src emacs-lisp :lexical t
+  (use-package rainbow-delimiters
+    :ghook 'prog-mode-hook)
+  (use-package rainbow-mode
+    :ghook 'prog-mode-hook)
+#+end_src
+
+*** Nerd Icon
+#+begin_src emacs-lisp :lexical t
+  (defun +font-installed-p (font-family)
+    "Check if FONT-FAMILY is installed on the system."
+    (and font-family (member font-family (font-family-list)) t))
+  (use-package nerd-icons
+    :config
+    ;; Show .m files as matlab/octave files (integral icon)
+    (setcdr (assoc "m" nerd-icons-extension-icon-alist)
+            '(nerd-icons-mdicon "nf-md-math_integral_box" :face nerd-icons-orange))
+    (when (and (display-graphic-p) (not (+font-installed-p nerd-icons-font-family)))
+      (nerd-icons-install-fonts 'dont-ask)))
+#+end_src
+
+*** Doom-modeline
+#+begin_quote
+A fancy and fast mode-line inspired by minimalism design.
+
+https://github.com/seagle0128/doom-modeline
+#+end_quote
+
+#+begin_src emacs-lisp :lexical t
+(use-package doom-modeline
+  :defer 2
+  :config
+  (column-number-mode 1)
+  (doom-modeline-mode)
+  :custom
+  (doom-modeline-icon t "Show icons in the modeline"))
+#+end_src
+
+*** Treesit-auto
+#+begin_src emacs-lisp :lexical t
+(use-package treesit-auto
+  :custom
+  (treesit-auto-install 'prompt)
+  :config
+  (treesit-auto-add-to-auto-mode-alist 'all)
+  (global-treesit-auto-mode))
+#+end_src
+
+** Tools
+*** Expand Region
+#+begin_src emacs-lisp :lexical t
+  (use-package expand-region
+    :bind ("C-q" . er/expand-region))
+#+end_src
+
+*** Undo
+#+begin_src emacs-lisp :lexical t
+  (use-package undo-tree
+    :config
+    (setq undo-tree-auto-save-history t
+          undo-tree-history-directory-alist `(("." . ,(concat my/local-dir "undo/"))))
+    :hook ((text-mode . undo-tree-mode)
+           (prog-mode . undo-tree-mode))
+    :init
+    (+nmap!
+      "u" 'undo-tree-undo
+      "U" 'undo-tree-redo))
+#+end_src
+
+*** Which-key
+#+begin_quote
+which-key is a minor mode for Emacs that displays the key bindings following your currently entered incomplete command (a prefix) in a popup.
+
+https://github.com/justbur/emacs-which-key
+#+end_quote
+
+#+begin_src emacs-lisp :lexical t
+(use-package which-key
+  :demand t
+  :init
+  (setq which-key-enable-extended-define-key t)
+  :config
+  (which-key-mode)
+  :custom
+  (which-key-side-window-location 'bottom)
+  (which-key-sort-order 'which-key-key-order-alpha)
+  (which-key-side-window-max-width 0.33)
+  (which-key-idle-delay 0.2)
+  :diminish which-key-mode)
+#+end_src
+
+*** Term
+#+begin_src emacs-lisp :lexical t
+  (use-package vterm
+    :bind (:map vterm-mode-map ("<return>" . vterm-send-return))
+    :commands (vterm vterm-other-window)
+    :init
+    (+map!
+    "t" '(:ignore t :which-key "terminal")
+    "tt" 'vterm-other-window
+    "t." 'vterm)
+    :custom
+      (vterm-max-scrollback 5000)
+      (vterm-tramp-shells '(("docker" "/bin/bash")))
+    :config
+      (evil-set-initial-state 'vterm-mode 'emacs))
+#+end_src
+
+** Completion
+*** Cape
+#+begin_src emacs-lisp :lexical t
+  (use-package cape
+    :demand t
+    ;; Bind dedicated completion commands
+    ;; Alternative prefix keys: C-c p, M-p, M-+, ...
+    :bind (("C-c p p" . completion-at-point) ;; capf
+           ("C-c p t" . complete-tag)        ;; etags
+           ("C-c p d" . cape-dabbrev)        ;; or dabbrev-completion
+           ("C-c p h" . cape-history)
+           ("C-c p f" . cape-file)
+           ("C-c p k" . cape-keyword)
+           ("C-c p s" . cape-elisp-symbol)
+           ("C-c p e" . cape-elisp-block)
+           ("C-c p a" . cape-abbrev)
+           ("C-c p l" . cape-line)
+           ("C-c p w" . cape-dict)
+           ("C-c p :" . cape-emoji)
+           ("C-c p \\" . cape-tex)
+           ("C-c p _" . cape-tex)
+           ("C-c p ^" . cape-tex)
+           ("C-c p &" . cape-sgml)
+           ("C-c p r" . cape-rfc1345))
+    :init
+    ;; Add to the global default value of `completion-at-point-functions' which is
+    ;; used by `completion-at-point'.  The order of the functions matters, the
+    ;; first function returning a result wins.  Note that the list of buffer-local
+    ;; completion functions takes precedence over the global list.
+    (add-to-list 'completion-at-point-functions #'cape-dabbrev)
+    (add-to-list 'completion-at-point-functions #'cape-file)
+    (add-to-list 'completion-at-point-functions #'cape-elisp-block)
+    ;;(add-to-list 'completion-at-point-functions #'cape-history)
+    ;;(add-to-list 'completion-at-point-functions #'cape-keyword)
+    ;;(add-to-list 'completion-at-point-functions #'cape-tex)
+    ;;(add-to-list 'completion-at-point-functions #'cape-sgml)
+    ;;(add-to-list 'completion-at-point-functions #'cape-rfc1345)
+    ;;(add-to-list 'completion-at-point-functions #'cape-abbrev)
+    ;;(add-to-list 'completion-at-point-functions #'cape-dict)
+    ;;(add-to-list 'completion-at-point-functions #'cape-elisp-symbol)
+    ;;(add-to-list 'completion-at-point-functions #'cape-line)
+
+    :config
+    ;; Use Company backends as Capfs.
+    (setq-local completion-at-point-functions
+      (mapcar #'cape-company-to-capf
+        (list #'company-files #'company-keywords #'company-dabbrev)))
+  )
+#+end_src
+
+*** Corfu
+#+begin_src emacs-lisp :lexical t
+  (use-package corfu
+    :elpaca (corfu :host github :repo "minad/corfu" :files (:defaults "extensions/*.el"))
+    ;; :hook (minemacs-after-startup . global-corfu-mode)
+    :hook (eshell-mode . +corfu-less-intrusive-h)
+    :hook (minibuffer-setup . +corfu-enable-in-minibuffer-h)
+    :bind (:map corfu-map
+           ("M-m" . +corfu-complete-in-minibuffer)
+           ("<tab>" . corfu-next)
+           ("<backtab>" . corfu-previous)
+           ("C-j" . corfu-next)
+           ("C-k" . corfu-previous))
+    :custom
+    (corfu-auto t) ; Enable auto completion
+    (corfu-cycle t) ; Allows cycling through candidates
+    (corfu-min-width 25)
+    (corfu-auto-delay 0.2)
+    :init
+    (global-corfu-mode)
+    :config
+    (defun +corfu-enable-in-minibuffer-h ()
+      "Enable Corfu in the minibuffer if `completion-at-point' is bound."
+      (when (where-is-internal #'completion-at-point (list (current-local-map)))
+        (setq-local corfu-auto nil) ; Enable/disable auto completion
+        (corfu-mode 1)))
+
+    (defun +corfu-less-intrusive-h ()
+      (setq-local corfu-quit-at-boundary t
+                  corfu-quit-no-match t
+                  corfu-auto nil)
+      (corfu-mode 1))
+
+    ;; Taken from:
+    ;; git.sr.ht/~gagbo/doom-config/tree/master/item/modules/completion/corfu/config.el
+    (defun +corfu-complete-in-minibuffer ()
+      "Move current completions to the minibuffer."
+      (interactive)
+      (let ((completion-extra-properties corfu--extra)
+            completion-cycle-threshold
+            completion-cycling)
+        (apply #'consult-completion-in-region completion-in-region--data))))
+#+end_src
+
+**** corfu-popupinfo
+#+begin_src emacs-lisp :lexical t
+(use-feature corfu-popupinfo
+  :hook (corfu-mode . corfu-popupinfo-mode)
+  :bind (:package corfu
+         :map corfu-map
+         ("M-p" . corfu-popupinfo-scroll-down)
+         ("M-n" . corfu-popupinfo-scroll-up)
+         ("M-d" . corfu-popupinfo-toggle))
+  :custom
+  (corfu-popupinfo-delay 0.1)
+  (corfu-popupinfo-max-height 15))
+#+end_src
+
+**** corfu-history
+#+begin_src emacs-lisp :lexical t
+  (use-feature corfu-popupinfo
+    :hook (corfu-mode . corfu-popupinfo-mode)
+    :config
+    (unless (bound-and-true-p savehist-mode)
+      (savehist-mode 1))
+    (add-to-list 'savehist-additional-variables 'corfu-history))
+#+end_src
+
+**** corfu-terminal
+#+begin_src emacs-lisp :lexical t
+(use-package corfu-terminal
+  :hook (corfu-mode . corfu-terminal-mode))
+#+end_src
+
+**** nerd-icons-corfu
+#+begin_src emacs-lisp :lexical t
+(use-package nerd-icons-corfu
+  :after corfu
+  :demand t
+  :config
+  (add-to-list 'corfu-margin-formatters #'nerd-icons-corfu-formatter))
+#+end_src
+
+*** Consult
+#+begin_src emacs-lisp :lexical t
+(defun +region-or-thing-at-point ()
+  "Return the region or the thing at point."
+  (when-let ((thing (ignore-errors
+                      (or (prog1 (thing-at-point 'region t)
+                            (deactivate-mark))
+                          (cl-some (+apply-partially-right #'thing-at-point t)
+                                   '(symbol email number string word))))))
+    ;; If the matching thing has multi-lines, join them
+    (string-join (string-lines thing))))
+#+end_src
+
+#+begin_src emacs-lisp :lexical t
+  (use-package consult
+    :hook (embark-collect-mode . consult-preview-at-point-mode)
+    :bind (:map minibuffer-local-map
+           ("C-r" . consult-history)
+           ("C-S-v" . consult-yank-pop)
+           :package isearch
+           :map isearch-mode-map
+           ("C-S-v" . consult-yank-pop))
+    :custom
+    ;; Use `consult-xref' for `xref-find-references'
+    (xref-show-xrefs-function #'consult-xref)
+    ;; Better formatting for `view-register'
+    (register-preview-function #'consult-register-format)
+    :init
+    (+map!
+      ;; buffer
+      "bll" #'consult-line
+      "blf" #'consult-focus-lines
+      "blk" #'consult-keep-lines
+      "blg" #'consult-goto-line
+      "bb"  #'consult-buffer
+      "bB"  #'consult-buffer-other-window
+      "bF"  #'consult-buffer-other-frame
+      "bmM" #'consult-bookmark
+      "bi"  #'consult-imenu
+      "bO"  #'consult-outline
+      ;; file
+      "fr"  #'consult-recent-file
+      ;; git/vc
+      "gG"  #'consult-git-grep
+      ;; search
+      "ss"  (if (executable-find "rg") #'consult-ripgrep #'consult-grep)
+      "sS"  (if (executable-find "rg") #'consult-grep #'consult-ripgrep)
+      "sf"  (if (executable-find "fd") #'consult-fd #'consult-find)
+      "sF"  (if (executable-find "fd") #'consult-find #'consult-fd)
+      "sM"  #'consult-man
+      "st"  #'consult-locate
+      "sh"  #'consult-history
+      "sa"  #'consult-org-agenda
+      "sl"  #'consult-locate
+      "si"  #'consult-isearch-history
+      ;; project
+      "pl"  #'consult-line-multi
+      "pi"  #'consult-imenu-multi
+      ;; code
+      "cm"  #'consult-flymake
+      "cE"  #'consult-compile-error
+      ;; extras
+      "ec"  #'consult-complex-command
+      ;; insert
+      "iy"  #'consult-yank-from-kill-ring
+      "ip"  #'consult-yank-pop
+      "ir"  '(nil :wk "register")
+      "irr" #'consult-register
+      "irl" #'consult-register-load
+      "irs" #'consult-register-store
+      ;; help
+      "hu"  #'consult-theme
+      "hI"  #'consult-info)
+    (+map-local! :keymaps 'org-mode-map
+      "h"   #'consult-org-heading)
+    :config
+    (setq-default completion-in-region-function #'consult-completion-in-region)
+
+    ;; Fill the initial query of `consult' commands from region or thing at point.
+    (consult-customize
+     consult-find :initial (+region-or-thing-at-point)
+     consult-grep :initial (+region-or-thing-at-point)
+     consult-line :initial (+region-or-thing-at-point)
+     consult-line-multi :initial (+region-or-thing-at-point)
+     consult-man :initial (+region-or-thing-at-point)
+     consult-ripgrep :initial (+region-or-thing-at-point)))
+#+end_src
+
+**** consult-dir
+#+begin_src emacs-lisp :lexical t
+  (use-package consult-dir
+    :bind (("C-x C-d" . consult-dir)
+           :package vertico
+           :map vertico-map
+           ("C-x C-d" . consult-dir)
+           ("C-x C-j" . consult-dir-jump-file))
+    :init
+    (+map! "ed" #'consult-dir))
+#+end_src
+
+*** Embark
+#+begin_src emacs-lisp :lexical t
+  (use-package embark
+    :bind (("<remap> <describe-bindings>" . embark-bindings)
+           ("C-²" . embark-act) ; In a French AZERTY keyboard, the ² key is right above TAB
+           ("M-²" . embark-collect)
+           ("C-&" . embark-dwim))
+    :init
+    ;; Use Embark to show bindings in a key prefix with `C-h`
+    (setq prefix-help-command #'embark-prefix-help-command)
+    (+map!
+      "a" #'embark-act
+      "A" #'embark-collect))
+#+end_src
+
+**** embark-consult
+#+begin_src emacs-lisp :lexical t
+  (use-package embark-consult
+    :after embark consult
+    :hook (embark-collect-mode . consult-preview-at-point-mode))
+#+end_src
+
+*** Marginalia
+#+begin_src emacs-lisp :lexical t
+  (use-package marginalia
+    ;; Bind `marginalia-cycle' locally in the minibuffer.  To make the binding
+    ;; available in the *Completions* buffer, add it to the
+    ;; `completion-list-mode-map'.
+    :bind (:map minibuffer-local-map
+           ("M-A" . marginalia-cycle))
+
+    ;; The :init section is always executed.
+    :init
+
+    ;; Marginalia must be activated in the :init section of use-package such that
+    ;; the mode gets enabled right away. Note that this forces loading the
+    ;; package.
+    (marginalia-mode))
+#+end_src
+
+**** nerd-icons-completion
+#+begin_src emacs-lisp :lexical t
+(use-package nerd-icons-completion
+  :hook (marginalia-mode . nerd-icons-completion-marginalia-setup))
+#+end_src
+
+*** Orderless
+#+begin_src emacs-lisp :lexical t
+  (use-package orderless
+    :demand t
+    :custom
+    (completion-styles '(orderless basic))
+    (completion-category-overrides '((file (styles basic partial-completion)))))
+#+end_src
+
+*** Vertico
+#+begin_src emacs-lisp :lexical t
+  (use-package vertico
+    :elpaca (vertico :host github :repo "minad/vertico" :files (:defaults "extensions/*"))
+    :init (vertico-mode)
+    ;; In the minibuffer, "C-k" is be mapped to act like "<up>". However, in
+    ;; Emacs, "C-k" have a special meaning of `kill-line'. So lets map "C-S-k"
+    ;; to serve the original "C-k".
+    :bind (:map vertico-map
+           ("C-j" . vertico-next)
+           ("C-k" . vertico-previous)
+           :map minibuffer-local-map
+           ("C-S-k" . kill-line))
+    :custom
+    (vertico-cycle t)
+    (vertico-resize nil)
+    (vertico-count 12))
+#+end_src
+
+**** vertico-directory
+#+begin_src emacs-lisp :lexical t
+(use-feature vertico-directory
+  :after vertico
+  :demand t
+  :hook (rfn-eshadow-update-overlay . vertico-directory-tidy)
+  :bind (:map vertico-map
+         ("RET" . vertico-directory-enter)
+         ("DEL" . vertico-directory-delete-char)
+         ("M-DEL" . vertico-directory-delete-word)
+         ("M-h" . vertico-directory-up)))
+#+end_src
+
+**** vertico-repeat
+#+begin_src emacs-lisp :lexical t
+#+end_src
+
+** Lang
+*** Nix
+#+begin_src emacs-lisp :lexical t
+  ;; (use-package nix-mode)
+  (use-package nix-mode
+    :mode "\\.nix\\'")
+    ;; :config
+    ;; ;; Register Eglot servers on the `nix-ts-mode' in addition to the already configured `nix-mode'
+    ;; (with-eval-after-load 'eglot
+    ;;   (when-let ((server (assoc 'nix-mode eglot-server-programs)))
+    ;;     (setcar server '(nix-mode nix-ts-mode)))))
+#+end_src
