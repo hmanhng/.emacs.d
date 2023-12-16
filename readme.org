@@ -1,5 +1,21 @@
 #+title: My Emacs Configuration
+#+author: hmanhng
+#+description: emacs literate config
 #+startup: indent show2levels
+
+* Content :TOC:
+- [[#bootstrap][Bootstrap]]
+  - [[#lexical-binding][Lexical binding]]
+  - [[#var][Var]]
+  - [[#lib][Lib]]
+  - [[#core][Core]]
+- [[#packages][Packages]]
+  - [[#evil-like-vim][Evil (Like vim)]]
+  - [[#key-bindding][Key-Bindding]]
+  - [[#ui][UI]]
+  - [[#tools][Tools]]
+  - [[#completion][Completion]]
+  - [[#lang][Lang]]
 
 * Bootstrap
 ** Lexical binding
@@ -8,151 +24,24 @@
   ;; -*- lexical-binding: t; -*-
 #+end_src
 
-** Core
-*** Settings
+** Var
 One of the things like using [[https://doomemacs.org/][Doom Emacs]] is that all non-versioned files (caches, worskapces, runtime data) went under `.local`.
 Let's do the same and define `my/local-dir` that we'll use all across the board.
 #+begin_src emacs-lisp :lexical t
-  (defvar my/local-dir (concat user-emacs-directory ".local/") "Local state directory")
+  (defvar my/local-dir (concat my/emacs-dir ".local/") "Local state directory")
+  (defvar my/cache-dir (concat my/local-dir "cache/") "Cache state directory")
+  (setq user-emacs-directory my/cache-dir)
 #+end_src
 
 #+begin_src emacs-lisp :lexical t
-  (setq confirm-kill-emacs nil) ;; No ask when quit Emacs
-  (setq-default indent-tabs-mode nil) ;; Use backspace instead of tab
-  (setq electric-indent-inhibit t)
-  (setq inhibit-message nil) ;; Changing that makes evil-search '/' invisible!
-  (setq inhibit-startup-message t)
-  (set-face-attribute 'default nil :height 150)
-  (setq warning-minimum-level :emergency)
-  (setq visible-bell nil) ;; Disable the annoying bell
-  (setq ring-bell-function 'ignore)
+  (defconst os/linux (eq system-type 'gnu/linux) "Non-nil on GNU/Linux systems.")
+  (defconst os/bsd (and (memq system-type '(berkeley-unix gnu/kfreebsd)) t) "Non-nil on BSD systems.")
+  (defconst os/win (and (memq system-type '(cygwin windows-nt ms-dos)) t) "Non-nil on Windows systems.")
+  (defconst os/mac (eq system-type 'darwin) "Non-nil on MacOS systems.")
 #+end_src
 
-**** Fonts
-The configured font needs to support the unicode characters that are used by the modeline.
-The default font is good enough so let's not define additonal configuration here.
-#+begin_src emacs-lisp :lexical t
-(push '(font . "IBM Plex Mono-18") default-frame-alist)
-(set-face-font 'default "IBM Plex Mono-18")
-(set-face-font 'variable-pitch "DejaVu Sans")
-(copy-face 'default 'fixed-pitch)
-#+end_src
-
-**** Display line number
-#+begin_src emacs-lisp :lexical t
-  (use-package display-line-numbers
-    ;; Show line numbers
-    :hook ((prog-mode conf-mode text-mode) . display-line-numbers-mode)
-    :custom
-    ;; Relative line numbering
-    (display-line-numbers-type 'relative)
-    ;; Width for line numbers
-    (display-line-numbers-width 4)
-    ;; Display absolute line numbers in narrowed regions
-    (display-line-numbers-widen t))
-#+end_src
-
-**** Smooth Scrolling
-#+begin_src emacs-lisp :lexical t
-  (use-package pixel-scroll
-    ;; :after minemacs-loaded
-    :demand t
-    :custom
-    ;; Better scrolling on Emacs29+, specially on a touchpad
-    (pixel-scroll-precision-use-momentum t)
-    :config
-    ;; Scroll pixel by pixel, in Emacs29+ there is a more pricise mode way to scroll
-    (if (>= emacs-major-version 29)
-        (pixel-scroll-precision-mode 1)
-      (pixel-scroll-mode 1)))
-#+end_src
-
-*** Package Manager
-**** Elpaca
-Elpaca is an elisp package manager. It allows users to find, install, update, and remove third-party packages for Emacs. It is a replacement for the built-in Emacs package manager, package.el
-Github: https://github.com/progfolio/elpaca
-***** Installer 
-#+begin_src emacs-lisp :lexical t
-  (defvar elpaca-installer-version 0.5)
-  (defvar elpaca-directory (expand-file-name "elpaca/" my/local-dir))
-  (defvar elpaca-builds-directory (expand-file-name "builds/" elpaca-directory))
-  (defvar elpaca-repos-directory (expand-file-name "repos/" elpaca-directory))
-  (defvar elpaca-order '(elpaca :repo "https://github.com/progfolio/elpaca.git"
-                                :ref nil
-                                :files (:defaults (:exclude "extensions"))
-                                :build (:not elpaca--activate-package)))
-  (let* ((repo  (expand-file-name "elpaca/" elpaca-repos-directory))
-         (build (expand-file-name "elpaca/" elpaca-builds-directory))
-         (order (cdr elpaca-order))
-         (default-directory repo))
-    (add-to-list 'load-path (if (file-exists-p build) build repo))
-    (unless (file-exists-p repo)
-      (make-directory repo t)
-      (when (< emacs-major-version 28) (require 'subr-x))
-      (condition-case-unless-debug err
-          (if-let ((buffer (pop-to-buffer-same-window "*elpaca-bootstrap*"))
-                   ((zerop (call-process "git" nil buffer t "clone"
-                                         (plist-get order :repo) repo)))
-                   ((zerop (call-process "git" nil buffer t "checkout"
-                                         (or (plist-get order :ref) "--"))))
-                   (emacs (concat invocation-directory invocation-name))
-                   ((zerop (call-process emacs nil buffer nil "-Q" "-L" "." "--batch"
-                                         "--eval" "(byte-recompile-directory \".\" 0 'force)")))
-                   ((require 'elpaca))
-                   ((elpaca-generate-autoloads "elpaca" repo)))
-              (kill-buffer buffer)
-            (error "%s" (with-current-buffer buffer (buffer-string))))
-        ((error) (warn "%s" err) (delete-directory repo 'recursive))))
-    (unless (require 'elpaca-autoloads nil t)
-      (require 'elpaca)
-      (elpaca-generate-autoloads "elpaca" repo)
-      (load "./elpaca-autoloads")))
-  (add-hook 'after-init-hook #'elpaca-process-queues)
-  (elpaca `(,@elpaca-order))
-#+end_src
-
-***** use-package
-Configure elpace `use-package` integration so that the rest of the configuration just uses `use-package`.
-#+begin_src emacs-lisp :lexical t
-  (elpaca elpaca-use-package
-    ;; Enable :elpaca use-package keyword.
-    (elpaca-use-package-mode)
-    ;; Assume :elpaca t unless otherwise specified.
-    (setq elpaca-use-package-by-default t))
-
-  ;; Block until current queue processed.
-  (elpaca-wait)
-#+end_src
-
-***** use-feature
-There are cases where we want to use `use-package` with internal packages.
-In these cases `:elpaca nil` needs to be set. Let's create a macro `use-feature`
-that combines `use-package` with `:elpaca nil` nicely.
-
-Source: https://github.com/progfolio/.emacs.d/blob/master/init.org
-#+begin_src emacs-lisp :lexical t
-  (defmacro use-feature (name &rest args)
-    "Like `use-package' but accounting for asynchronous installation.
-    NAME and ARGS are in `use-package'."
-    (declare (indent defun))
-    `(use-package ,name
-       :elpaca nil
-       ,@args))
-#+end_src
-
-**** COMMENT MELPA
-Sometimes I want to use package-xxx commands and query MELPA.
-Since I don't do that often I expect this to be commented out most of the time.
-
-#+begin_src emacs-lisp
-  (require 'package)
-  (add-to-list 'package-archives
-    '("MELPA" .
-      "http://melpa.org/packages/"))
-  (package-initialize)
-#+end_src
-* Lib
-** Keybinding Macro
+** Lib
+*** Keybinding Macro
 #+begin_src emacs-lisp :lexical t
 ;;; Keybinding macros
 ;;; =================
@@ -247,69 +136,1001 @@ It is deferred until `general' gets loaded and configured."
     (general-nvmap ,@args)))
 #+end_src
 
-** +add-hook!
+*** File, Dir
+Files, directories and IO helper functions
 #+begin_src emacs-lisp :lexical t
-(defmacro +add-hook! (hooks &rest rest)
-  "A convenience macro for adding N functions to M hooks.
+  (defun +file-mime-type (file)
+    "Get MIME type for FILE based on magic codes provided by the \"file\" command.
+  Return a symbol of the MIME type, ex: `text/x-lisp', `text/plain',
+  `application/x-object', `application/octet-stream', etc."
+    (if-let ((file-cmd (executable-find "file"))
+             (mime-type (shell-command-to-string (format "%s --brief --mime-type %s" file-cmd file))))
+        (intern (string-trim-right mime-type))
+      (error "The \"file\" command isn't installed")))
 
-This macro accepts, in order:
+  (defun +file-name-incremental (filename)
+    "Return a unique file name for FILENAME.
+  If \"file.ext\" exists, returns \"file-0.ext\"."
+    (let* ((ext (file-name-extension filename))
+           (dir (file-name-directory filename))
+           (file (file-name-base filename))
+           (filename-regex (concat "^" file "\\(?:-\\(?1:[[:digit:]]+\\)\\)?" (if ext (concat "\\." ext) "")))
+           (last-file (car (last (directory-files dir nil filename-regex))))
+           (last-file-num (and last-file (string-match filename-regex last-file) (match-string 1 last-file)))
+           (num (1+ (string-to-number (or last-file-num "-1")))))
+      (file-name-concat dir (format "%s%s%s" file (if last-file (format "-%d" num) "") (if ext (concat "." ext) "")))))
 
-  1. The mode(s) or hook(s) to add to. This is either an unquoted mode, an
-     unquoted list of modes, a quoted hook variable or a quoted list of hook
-     variables.
-  2. Optional properties :local, :append, and/or :depth [N], which will make the
-     hook buffer-local or append to the list of hooks (respectively),
-  3. The function(s) to be added: this can be a quoted function, a quoted list
-     thereof, a list of `defun' or `cl-defun' forms, or arbitrary forms (will
-     implicitly be wrapped in a lambda).
+  (defun +file-read-to-string (filename)
+    "Return a string with the contents of FILENAME."
+    (when (and (file-exists-p filename) (not (file-directory-p filename)))
+      (with-temp-buffer
+        (insert-file-contents filename)
+        (buffer-string))))
 
-If the hook function should receive an argument (like in
-`enable-theme-functions'), the `args' variable can be expanded in the forms
+  (defun +directory-subdirs (dir)
+    "Return a list of sub-directories in DIR."
+    (when dir
+      (seq-filter #'file-directory-p
+                  (mapcar #'abbreviate-file-name (directory-files dir t "[^.][^.]?\\'")))))
 
-  (+add-hook! \\='enable-theme-functions
-    (message \"Enabled theme: %s\" (car args)))
+  (defun +directory-ensure (&rest path-parts)
+    "Concatenate PATH-PARTS to construct a path and return it.
 
-\(fn HOOKS [:append :local [:depth N]] FUNCTIONS-OR-FORMS...)"
-  (declare (indent (lambda (indent-point state)
-                     (goto-char indent-point)
-                     (when (looking-at-p "\\s-*(")
-                       (lisp-indent-defform state indent-point))))
-           (debug t))
-  (let* ((hook-forms (+resolve-hook-forms hooks))
-         (func-forms ())
-         (defn-forms ())
-         append-p local-p remove-p depth)
-    (while (keywordp (car rest))
-      (pcase (pop rest)
-        (:append (setq append-p t))
-        (:depth  (setq depth (pop rest)))
-        (:local  (setq local-p t))
-        (:remove (setq remove-p t))))
-    (while rest
-      (let* ((next (pop rest))
-             (first (car-safe next)))
-        (push (cond ((memq first '(function nil))
-                     next)
-                    ((eq first 'quote)
-                     (let ((quoted (cadr next)))
-                       (if (atom quoted)
-                           next
-                         (when (cdr quoted)
-                           (setq rest (cons (list first (cdr quoted)) rest)))
-                         (list first (car quoted)))))
-                    ((memq first '(defun cl-defun))
-                     (push next defn-forms)
-                     (list 'function (cadr next)))
-                    ((prog1 `(lambda (&rest args) ,@(cons next rest))
-                       (setq rest nil))))
-              func-forms)))
-    `(progn
-       ,@defn-forms
-       (dolist (hook (nreverse ',hook-forms))
-        (dolist (func (list ,@func-forms))
-         ,(if remove-p
-              `(remove-hook hook func ,local-p)
-            `(add-hook hook func ,(or depth append-p) ,local-p)))))))
+  Ensure the path exists, if not create it. The exact behavior is to create the
+  parent directory if the path is a file, and if the path is a directory, create
+  that directory."
+    (let* ((path (mapconcat #'identity path-parts nil))
+           (parent-dir (file-name-directory path)))
+      (unless (file-directory-p parent-dir)
+        (ignore-errors (mkdir parent-dir t))
+        (unless (file-directory-p parent-dir)
+          (+error! "Cannot create directory %s" parent-dir)))
+      path))
+
+  (defun +delete-this-file (&optional path force-p)
+    "Delete PATH.
+
+  If PATH is not specified, default to the current buffer's file.
+
+  If FORCE-P, delete without confirmation."
+    (interactive
+     (list (buffer-file-name (buffer-base-buffer))
+           current-prefix-arg))
+    (let* ((path (or path (buffer-file-name (buffer-base-buffer))))
+           (short-path (abbreviate-file-name path)))
+      (unless (and path (file-exists-p path))
+        (user-error "Buffer is not visiting any file"))
+      (unless (file-exists-p path)
+        (error "File doesn't exist: %s" path))
+      (unless (or force-p (y-or-n-p (format "Really delete %S?" short-path)))
+        (user-error "Aborted"))
+      (unwind-protect
+          (progn (delete-file path delete-by-moving-to-trash) t)
+        (when (file-exists-p path)
+          (error "Failed to delete %S" short-path)))))
+
+  ;; Rewrite of: crux-delete-file-and-buffer, proposes also to delete VC
+  ;; controlled files even when `vc-delete-file' fails (edited, conflict, ...).
+  (defun +delete-this-file-and-buffer (&optional filename)
+    "Delete FILENAME and its associated visiting buffer."
+    (interactive)
+    (when-let ((filename (or filename (buffer-file-name)))
+               (short-path (abbreviate-file-name filename)))
+      (if (vc-backend filename)
+          (or (ignore-errors (vc-delete-file (buffer-file-name)))
+              (+delete-this-file filename)
+              (kill-buffer))
+        (when (y-or-n-p (format "Are you sure you want to delete %s? " short-path))
+          (delete-file filename delete-by-moving-to-trash)
+          (message "Deleted file %s" short-path)
+          (kill-buffer)))))
+
+  (defun +delete-file-or-directory (file-or-directory &optional trash recursive)
+    "Delete FILE-OR-DIRECTORY with `delete-file' or `delete-directory'.
+
+  Move to trash when TRASH is non-nil, delete directories recursively when
+  RECURSIVE is non-nil."
+    (if (file-directory-p file-or-directory)
+        (delete-directory file-or-directory recursive trash)
+      (delete-file file-or-directory trash)))
+
+  (if (fboundp 'rename-visited-file)
+      (defalias '+move-this-file #'rename-visited-file)
+    (defun +move-this-file (new-path &optional force-p)
+      "Move current buffer's file to NEW-PATH.
+
+  If FORCE-P, overwrite the destination file if it exists, without confirmation."
+      (interactive
+       (list (read-file-name "Move file to: ")
+             current-prefix-arg))
+      (unless (and buffer-file-name (file-exists-p buffer-file-name))
+        (user-error "Buffer is not visiting any file"))
+      (let ((old-path (buffer-file-name (buffer-base-buffer)))
+            (new-path (expand-file-name new-path)))
+        (when (directory-name-p new-path)
+          (setq new-path (expand-file-name (file-name-nondirectory old-path) new-path)))
+        (make-directory (file-name-directory new-path) t)
+        (rename-file old-path new-path (or force-p 1))
+        (set-visited-file-name new-path t t)
+        (message "File moved to %S" (abbreviate-file-name new-path)))))
+
+  (defun +tramp-sudo-file-path (file)
+    "Construct a Tramp sudo path to FILE. Works for both local and remote files."
+    (tramp-make-tramp-file-name "sudo" tramp-root-id-string nil (or (file-remote-p file 'host) "localhost") nil file))
+
+  (defun +sudo-find-file (file)
+    "Open FILE as root."
+    (interactive "FOpen file as root: ")
+    (find-file (+tramp-sudo-file-path file)))
+
+  (defun +sudo-this-file ()
+    "Open the current file as root."
+    (interactive)
+    (if-let ((this-file (or buffer-file-name
+                            (when (derived-mode-p 'dired-mode 'wdired-mode)
+                              default-directory))))
+        (find-file (+tramp-sudo-file-path this-file))
+      (user-error "Current buffer not bound to a file")))
+
+  (defun +sudo-save-buffer ()
+    "Save this buffer as root. Save as new file name if called with prefix."
+    (interactive)
+    (if-let ((file (or (and (or (not buffer-file-name) current-prefix-arg)
+                            (read-file-name "Save as root to: "))
+                       buffer-file-name))
+             (file (+tramp-sudo-file-path (expand-file-name file)))
+             (dest-buffer (find-file-noselect file))
+             (src-buffer (current-buffer)))
+        (progn
+          (copy-to-buffer dest-buffer (point-min) (point-max))
+          (unwind-protect (with-current-buffer dest-buffer (save-buffer))
+            (unless (eq src-buffer dest-buffer) (kill-buffer dest-buffer))
+            (with-current-buffer src-buffer (revert-buffer t t))))
+      (user-error "Unable to open %S" (abbreviate-file-name file))))
+
+  (defun +yank-this-file-name ()
+    "Yank the file name of this buffer."
+    (interactive)
+    (if-let ((file (buffer-file-name)))
+        (with-temp-buffer
+          (insert file)
+          (kill-ring-save (point-min) (point-max)))
+      (user-error "This buffer isn't bound to a file")))
+
+  (defun +clean-file-name (filename &optional downcase-p)
+    "Clean FILENAME, optionally convert to DOWNCASE-P."
+    ;; Clean slashes, backslashes, ":", ";", spaces, and tabs
+    (replace-regexp-in-string
+     "[:;\t\n\r /\\_]+" "-"
+     (replace-regexp-in-string
+      "[‘’‚“”„\"`'()&]+" ""
+      (if downcase-p (downcase filename) filename))))
+#+end_src
+
+*** Hack from Minemacs
+#+begin_src emacs-lisp :lexical t
+  (defmacro +cmdfy! (&rest body)
+    "Convert BODY to an interactive command."
+    `(lambda () (interactive) ,@body))
+
+  ;;; Missing primitive utilities
+
+  ;; See: emacs.stackexchange.com/q/3022/37002
+  (defun +reset-sym (sym)
+    "Reset SYM to its standard value."
+    (set sym (eval (car (get sym 'standard-value)))))
+
+  (defmacro +reset-var! (var)
+    "Reset VAR to its standard value."
+    `(setq ,var (eval (car (get ',var 'standard-value)))))
+
+  ;; Adapted from `evil-unquote', takes functions into account
+  (defun +unquote (expr)
+    "Return EXPR unquoted."
+    (declare (pure t) (side-effect-free t))
+    (while (memq (car-safe expr) '(quote function))
+      (setq expr (cadr expr)))
+    expr)
+
+  (defun +quoted-p (expr)
+    "Return t when EXPR is quoted."
+    (memq (car-safe expr) '(quote function)))
+
+  (defun +apply-partially-right (fun &rest args)
+    "Like `apply-partially', but apply the ARGS to the right of FUN."
+    (lambda (&rest args2)
+      (apply fun (append args2 args))))
+
+  ;; From Doom Emacs
+  (defun +resolve-hook-forms (hooks)
+    "Convert a list of modes into a list of hook symbols.
+
+  If a mode is quoted, it is left as is. If the entire HOOKS list is quoted, the
+  list is returned as-is."
+    (declare (pure t) (side-effect-free t))
+    (let ((hook-list (ensure-list (+unquote hooks))))
+      (if (eq (car-safe hooks) 'quote)
+          hook-list
+        (cl-loop for hook in hook-list
+                 if (eq (car-safe hook) 'quote)
+                 collect (cadr hook)
+                 else collect (intern (format "%s-hook" (symbol-name hook)))))))
+
+  (defun +setq-hook-fns (hooks rest &optional singles)
+    (unless (or singles (= 0 (% (length rest) 2)))
+      (signal 'wrong-number-of-arguments (list #'evenp (length rest))))
+    (cl-loop with vars = (let ((args rest)
+                               vars)
+                           (while args
+                             (push (if singles
+                                       (list (pop args))
+                                     (cons (pop args) (pop args)))
+                                   vars))
+                           (nreverse vars))
+             for hook in (+resolve-hook-forms hooks)
+             append
+             (cl-loop for (var . val) in vars
+                      collect
+                      (list var val hook
+                            (intern (format "+setq--%s-in-%s-h"
+                                            var hook))))))
+
+  (defmacro +add-hook! (hooks &rest rest)
+    "A convenience macro for adding N functions to M hooks.
+
+  This macro accepts, in order:
+
+    1. The mode(s) or hook(s) to add to. This is either an unquoted mode, an
+       unquoted list of modes, a quoted hook variable or a quoted list of hook
+       variables.
+    2. Optional properties :local, :append, and/or :depth [N], which will make the
+       hook buffer-local or append to the list of hooks (respectively),
+    3. The function(s) to be added: this can be a quoted function, a quoted list
+       thereof, a list of `defun' or `cl-defun' forms, or arbitrary forms (will
+       implicitly be wrapped in a lambda).
+
+  If the hook function should receive an argument (like in
+  `enable-theme-functions'), the `args' variable can be expanded in the forms
+
+    (+add-hook! \\='enable-theme-functions
+      (message \"Enabled theme: %s\" (car args)))
+
+  \(fn HOOKS [:append :local [:depth N]] FUNCTIONS-OR-FORMS...)"
+    (declare (indent (lambda (indent-point state)
+                       (goto-char indent-point)
+                       (when (looking-at-p "\\s-*(")
+                         (lisp-indent-defform state indent-point))))
+             (debug t))
+    (let* ((hook-forms (+resolve-hook-forms hooks))
+           (func-forms ())
+           (defn-forms ())
+           append-p local-p remove-p depth)
+      (while (keywordp (car rest))
+        (pcase (pop rest)
+          (:append (setq append-p t))
+          (:depth  (setq depth (pop rest)))
+          (:local  (setq local-p t))
+          (:remove (setq remove-p t))))
+      (while rest
+        (let* ((next (pop rest))
+               (first (car-safe next)))
+          (push (cond ((memq first '(function nil))
+                       next)
+                      ((eq first 'quote)
+                       (let ((quoted (cadr next)))
+                         (if (atom quoted)
+                             next
+                           (when (cdr quoted)
+                             (setq rest (cons (list first (cdr quoted)) rest)))
+                           (list first (car quoted)))))
+                      ((memq first '(defun cl-defun))
+                       (push next defn-forms)
+                       (list 'function (cadr next)))
+                      ((prog1 `(lambda (&rest args) ,@(cons next rest))
+                         (setq rest nil))))
+                func-forms)))
+      `(progn
+         ,@defn-forms
+         (dolist (hook (nreverse ',hook-forms))
+          (dolist (func (list ,@func-forms))
+           ,(if remove-p
+                `(remove-hook hook func ,local-p)
+              `(add-hook hook func ,(or depth append-p) ,local-p)))))))
+  ;; From Doom Emacs
+  (defmacro +remove-hook! (hooks &rest rest)
+    "A convenience macro for removing N functions from M hooks.
+
+  Takes the same arguments as `add-hook!'.
+
+  If N = 1 and M = 1, there's no benefit to using this macro over `remove-hook'.
+
+  \(fn HOOKS [:append :local] FUNCTIONS)"
+    (declare (indent defun) (debug t))
+    `(+add-hook! ,hooks :remove ,@rest))
+
+  ;; From Doom Emacs
+  (defmacro +setq-hook! (hooks &rest var-vals)
+    "Set buffer-local variables on HOOKS.
+
+  HOOKS can be expect receiving arguments (like in `enable-theme-functions'), the
+  `args' variable can be used inside VAR-VALS forms to get the arguments passed
+  the the function.
+
+    (+setq-hook! \\='enable-theme-functions
+      current-theme (car args))
+
+  \(fn HOOKS &rest [SYM VAL]...)"
+    (declare (indent 1))
+    (macroexp-progn
+    (cl-loop for (var val hook fn) in (+setq-hook-fns hooks var-vals)
+              collect `(defun ,fn (&rest args)
+                        ,(format "%s = %s" var (pp-to-string val))
+                        (setq-local ,var ,val))
+              collect `(add-hook ',hook #',fn -90))))
+
+  ;; From Doom Emacs
+  (defmacro +unsetq-hook! (hooks &rest vars)
+    "Unbind setq hooks on HOOKS for VARS.
+
+  \(fn HOOKS &rest VAR1 VAR2...)"
+    (declare (indent 1))
+    (macroexp-progn
+    (cl-loop for (_var _val hook fn)
+              in (+setq-hook-fns hooks vars 'singles)
+              collect `(remove-hook ',hook #',fn))))
+
+#+end_src
+*** Hack from Doom-emacs
+#+begin_src emacs-lisp :lexical t
+  (defmacro after! (package &rest body)
+    "Evaluate BODY after PACKAGE have loaded.
+
+  PACKAGE is a symbol (or list of them) referring to Emacs features (aka
+  packages). PACKAGE may use :or/:any and :and/:all operators. The precise format
+  is:
+
+  - An unquoted package symbol (the name of a package)
+      (after! helm BODY...)
+  - An unquoted, nested list of compound package lists, using any combination of
+    :or/:any and :and/:all
+      (after! (:or package-a package-b ...)  BODY...)
+      (after! (:and package-a package-b ...) BODY...)
+      (after! (:and package-a (:or package-b package-c) ...) BODY...)
+  - An unquoted list of package symbols (i.e. BODY is evaluated once both magit
+    and git-gutter have loaded)
+      (after! (magit git-gutter) BODY...)
+    If :or/:any/:and/:all are omitted, :and/:all are implied.
+
+  This emulates `eval-after-load' with a few key differences:
+
+  1. No-ops for package that are disabled by the user (via `package!') or not
+     installed yet.
+  2. Supports compound package statements (see :or/:any and :and/:all above).
+
+  Since the contents of these blocks will never by byte-compiled, avoid putting
+  things you want byte-compiled in them! Like function/macro definitions."
+    (declare (indent defun) (debug t))
+    (if (symbolp package)
+        (unless (memq package (bound-and-true-p doom-disabled-packages))
+          (list (if (or (not (bound-and-true-p byte-compile-current-file))
+                        (require package nil 'noerror))
+                    #'progn
+                  #'with-no-warnings)
+                `(with-eval-after-load ',package ,@body)))
+      (let ((p (car package)))
+        (cond ((memq p '(:or :any))
+               (macroexp-progn
+                (cl-loop for next in (cdr package)
+                         collect `(after! ,next ,@body))))
+              ((memq p '(:and :all))
+               (dolist (next (reverse (cdr package)) (car body))
+                 (setq body `((after! ,next ,@body)))))
+              (`(after! (:and ,@package) ,@body))))))
+#+end_src
+
+*** Eglot
+#+begin_src emacs-lisp :lexical t
+  (defun +eglot-register (modes &rest servers)
+    "Register MODES with LSP SERVERS.
+  Examples:
+    (+eglot-register 'vhdl-mode \"vhdl_ls\")
+    (+eglot-register 'lua-mode \"lua-language-server\" \"lua-lsp\")
+    (+eglot-register '(c-mode c++-mode) '(\"clangd\" \"--clang-tidy\" \"-j=12\") \"ccls\")"
+    (declare (indent 0))
+    (with-eval-after-load 'eglot
+      (add-to-list
+       'eglot-server-programs
+       (cons modes (if (length> servers 1)
+                       (eglot-alternatives (ensure-list servers))
+                     (ensure-list (car servers)))))))
+#+end_src
+
+** Core
+*** Settings
+**** Native compilation settings
+#+begin_src emacs-lisp :lexical t
+  (when (featurep 'native-compile)
+    (setq
+    ;; Silence compiler warnings as they can be pretty disruptive, unless we are
+    ;; running in `minemacs-verbose-p' mode.
+    native-comp-async-report-warnings-errors 'silent
+    native-comp-verbose 0 ; do not be too verbose
+    native-comp-debug 0
+    ;; Make native compilation happens asynchronously.
+    native-comp-jit-compilation t)
+
+    ;; Set the right directory to store the native compilation cache to avoid
+    ;; messing with "~/.emacs.d/".
+    (startup-redirect-eln-cache (concat my/cache-dir "eln/")))
+#+end_src
+
+**** emacs
+#+begin_src emacs-lisp :lexical t
+  (use-package emacs
+    :hook (after-save . +save--guess-file-mode-h)
+    :custom
+    (auto-save-list-file-prefix (concat my/cache-dir "auto-save/"))
+    (backup-directory-alist (list (cons "." (concat my/cache-dir "backup/"))))
+    ;; Enable auto-save (use `recover-file' or `recover-session' to recover)
+    (auto-save-default t)
+    ;; Include big deletions
+    (auto-save-include-big-deletions t)
+    ;; Set file naming transform
+    (auto-save-file-name-transforms
+    `(;; Prefix tramp autosaves with "tramp-"
+      ("\\`/[^/]*:\\([^/]*/\\)*\\([^/]*\\)\\'" ,(concat auto-save-list-file-prefix "tramp-\\2") t)
+      ;; Local autosaves
+      (".*" ,auto-save-list-file-prefix t)))
+    ;; Do not adjust window-vscroll to view tall lines. Fixes some lag issues see:
+    ;; emacs.stackexchange.com/a/28746
+    (auto-window-vscroll nil)
+    ;; Fast scrolling
+    (fast-but-imprecise-scrolling t)
+    ;; Keep the point in the same position while scrolling
+    (scroll-preserve-screen-position t)
+    ;; Do not move cursor to the center when scrolling
+    (scroll-conservatively 101)
+    ;; Scroll at a margin of one line
+    (scroll-margin 1)
+    ;; The number of lines to scroll
+    (scroll-step 1)
+    ;; Columns from the window edge point allowed before horizontal scroll
+    (hscroll-margin 2)
+    ;; The number of columns to scroll
+    (hscroll-step 1)
+    ;; Disable lockfiles
+    (create-lockfiles nil)
+    ;; Enable making backup files
+    (make-backup-files t)
+    ;; Number each backup file
+    (version-control t)
+    ;; Copy instead of renaming current file
+    (backup-by-copying t)
+    ;; Clean up after itself
+    (delete-old-versions t)
+    ;; Keep up to 5 old versions of each file
+    (kept-old-versions 5)
+    ;; Keep up to 5 new versions of each file
+    (kept-new-versions 5)
+    ;; Keep up to 5 versions when cleaning a directory
+    (dired-kept-versions 5)
+    ;; Hitting TAB behavior
+    (tab-always-indent 'complete)
+    ;; End files with newline
+    (require-final-newline t)
+    ;; 10MB (default is 160kB)
+    (undo-limit 10000000)
+    ;; 50MB (default is 240kB)
+    (undo-strong-limit 50000000)
+    ;; 150MB (default is 24MB)
+    (undo-outer-limit 150000000)
+    ;; Use small frames to display tooltips instead of the default OS tooltips
+    (use-system-tooltips nil)
+    ;; Resize window combinations proportionally
+    (window-combination-resize t)
+    ;; Stretch cursor to the glyph width
+    (x-stretch-cursor t)
+    ;; Do force frame size to be a multiple of char size
+    (frame-resize-pixelwise t)
+    ;; Don’t compact font caches during GC
+    (inhibit-compacting-font-caches t)
+    ;; Increase single chunk bytes to read from subprocess (default 4096)
+    (read-process-output-max (if os/linux
+                                (condition-case nil
+                                    ;; Android may raise permission-denied error
+                                    (with-temp-buffer
+                                      (insert-file-contents "/proc/sys/fs/pipe-max-size")
+                                      (string-to-number (buffer-string)))
+                                  ;; If an error occurred, fallback to the default value
+                                  (error read-process-output-max))
+                              (* 1024 1024)))
+    ;; Don't prompt for confirmation when we create a new file or buffer
+    (confirm-nonexistent-file-or-buffer nil)
+    ;; Enable recursive calls to minibuffer
+    (enable-recursive-minibuffers t)
+    ;; Ignore case when completing
+    (completion-ignore-case t)
+    (read-buffer-completion-ignore-case t)
+    ;; Display the true file name for symlinks
+    (find-file-visit-truename t)
+    ;; Use single space between sentences
+    (sentence-end-double-space nil)
+    ;; Move stuff to trash
+    (delete-by-moving-to-trash t)
+    ;; Save files only in sub-directories of current project
+    (save-some-buffers-default-predicate #'save-some-buffers-root)
+    ;; Inhibit startup message
+    (inhibit-startup-screen t)
+    ;; Do not ring
+    (ring-bell-function #'ignore)
+    ;; Set to non-nil to flash!
+    (visible-bell nil)
+    ;; Increase the large file threshold to 50 MiB
+    (large-file-warning-threshold (* 50 1024 1024))
+    ;; Initial scratch message (will be overridden if "fortune" is installed)
+    (initial-scratch-message ";; MinEmacs -- start here!")
+    ;; Set initial buffer to fundamental-mode for faster load
+    (initial-major-mode 'fundamental-mode)
+    ;; Always prompt in minibuffer (no GUI)
+    (use-dialog-box nil)
+    ;; Use y or n instead of yes or no
+    (use-short-answers t)
+    ;; Confirm before quitting
+    (confirm-kill-emacs #'y-or-n-p)
+    ;; Show unprettified symbol under cursor (when in `prettify-symbols-mode')
+    (prettify-symbols-unprettify-at-point t)
+    ;; Use a dashed line for `display-fill-column-indicator-mode'
+    (display-fill-column-indicator-character ?\u250a)
+    ;; Make apropos commands search more extensively
+    (apropos-do-all t)
+    ;; Do not ask obvious questions, follow symlinks
+    (vc-follow-symlinks t)
+    ;; Kill the shell buffer after exit
+    (shell-kill-buffer-on-exit t)
+    ;; More intuitive buffer naming style
+    (uniquify-buffer-name-style 'forward)
+    ;; No ugly button for widgets
+    (widget-image-enable nil)
+    ;; Make tooltips last a bit longer (default 10s)
+    (tooltip-hide-delay 20)
+    ;; Animated images loop forever instead of playing the animation only once
+    (image-animate-loop t)
+    :init
+    (setq-default truncate-lines nil ; Display long lines
+                  fill-column 80 ; Default fill column width
+                  tab-width 2) ; Small tab is enough!
+
+    ;; Inhibit startup message in echo area the brutal way!
+    ;; The `inhibit-startup-echo-area-message' variable is very restrictive, there is only one unique way of setting it right!
+    ;; See: reddit.com/r/emacs/comments/6e9o4o/comment/di8q1t5
+    (fset 'display-startup-echo-area-message #'ignore)
+
+    ;;; Why use anything but UTF-8?
+    (prefer-coding-system 'utf-8)
+    (set-charset-priority 'unicode)
+    (set-default-coding-systems 'utf-8)
+    ;; I use mainly English and French. Hence the "Latin-1" which is suitable for major Western Europe languages.
+    (set-language-environment "Latin-1")
+    (set-locale-environment "en_US.UTF-8")
+    ;; Use UTF-16-LE in Windows, see: rufflewind.com/2014-07-20/pasting-unicode-in-emacs-on-windows
+    (set-selection-coding-system (if os/win 'utf-16-le 'utf-8))
+    :config
+    ;; Show trailing whitespace in `prog-mode' and `conf-mode'
+    (+setq-hook! (prog-mode conf-mode) show-trailing-whitespace t)
+
+    ;; Guess the major mode after saving a file in `fundamental-mode' (adapted from Doom Emacs).
+    (defun +save--guess-file-mode-h ()
+      "Guess major mode when saving a file in `fundamental-mode'.
+  Likely, something has changed since the buffer was opened. e.g. A shebang line
+  or file path may exist now."
+      (when (eq major-mode 'fundamental-mode)
+        (let ((buffer (or (buffer-base-buffer) (current-buffer))))
+          (and (buffer-file-name buffer)
+              (eq buffer (window-buffer (selected-window))) ;; Only visible buffers
+              (set-auto-mode)))))
+  )
+#+end_src
+
+**** simple
+#+begin_src emacs-lisp :lexical t
+  (use-package simple
+    :init
+    ;; Never mix, use only spaces
+    (setq-default indent-tabs-mode nil)
+    ;; Wrap long lines
+    :hook ((prog-mode conf-mode text-mode) . visual-line-mode)
+    :custom
+    ;; Filter duplicate entries in kill ring
+    (kill-do-not-save-duplicates t)
+    ;; Save existing clipboard text into the kill ring before replacing it.
+    (save-interprogram-paste-before-kill t))
+#+end_src
+
+**** help
+Select help window for faster quit!
+#+begin_src emacs-lisp :lexical t
+(use-package help
+  :custom
+  (help-window-select t))
+#+end_src
+
+**** minibuffer
+#+begin_src emacs-lisp :lexical t
+  (use-package minibuffer
+    :custom
+    ;; Ignores case when completing files names
+    (read-file-name-completion-ignore-case t)
+    ;; More info on completions
+    (completions-detailed t))
+#+end_src
+
+**** dired
+#+begin_src emacs-lisp :lexical
+  (use-package dired
+    ;; Enable adding mail attachments from dired "C-c RET C-a" for
+    ;; `gnus-dired-attach'
+    :hook (dired-mode . turn-on-gnus-dired-mode)
+    :custom
+    (dired-dwim-target t)
+    (dired-auto-revert-buffer t))
+#+end_src
+
+**** project
+#+begin_src emacs-lisp :lexical t
+(use-package project
+  :demand t
+  :hook (kill-emacs . project-forget-zombie-projects)
+  :custom
+  (project-list-file (concat my/cache-dir "project-list.el"))
+  (project-vc-extra-root-markers '(".projectile.el" ".project.el" ".project")))
+#+end_src
+
+**** reftex
+#+begin_src emacs-lisp :lexical t
+  (use-package reftex ;; Inspired by Doom Emacs
+    :hook (reftex-toc-mode . reftex-toc-rescan)
+    :custom
+    ;; Get RefTeX working with BibLaTeX. See: tex.stackexchange.com/a/31992/43165
+    (reftex-cite-format
+     '((?a . "\\autocite[]{%l}")
+       (?b . "\\blockcquote[]{%l}{}")
+       (?c . "\\cite[]{%l}")
+       (?f . "\\footcite[]{%l}")
+       (?n . "\\nocite{%l}")
+       (?p . "\\parencite[]{%l}")
+       (?s . "\\smartcite[]{%l}")
+       (?t . "\\textcite[]{%l}"))
+     ;; This is needed when `reftex-cite-format' is set. See:
+     ;; superuser.com/a/1386206
+     (reftex-plug-into-AUCTeX t)
+     (reftex-toc-split-windows-fraction 0.3))
+    :config
+    (+map-local! :keymaps 'reftex-mode-map
+      ";" 'reftex-toc)
+    (+nvmap! :keymaps 'reftex-toc-mode-map
+      "j"   #'next-line
+      "k"   #'previous-line
+      "q"   #'kill-buffer-and-window
+      "ESC" #'kill-buffer-and-window)
+    (with-eval-after-load 'evil
+      (add-hook 'reftex-mode-hook #'evil-normalize-keymaps)))
+#+end_src
+
+**** bibtex
+#+begin_src emacs-lisp :lexical t
+  (use-package bibtex
+    :hook (bibtex-mode . display-line-numbers-mode)
+    :custom
+    (bibtex-dialect 'biblatex)
+    (bibtex-align-at-equal-sign t)
+    (bibtex-text-indentation 20)
+    :config
+    (+map-local! :keymaps 'bibtex-mode-map
+      "l" #'bibtex-fill-entry
+      "r" #'bibtex-reformat))
+#+end_src
+
+**** treesit
+#+begin_src emacs-lisp :lexical t
+  (use-package treesit
+    :custom
+    (treesit-font-lock-level 4))
+
+  (use-package dockerfile-ts-mode
+    :mode "/Dockerfile\\'")
+
+  (use-package cmake-ts-mode
+    :mode "CMakeLists\\.txt\\'"
+    :mode "\\.cmake\\'")
+#+end_src
+
+**** hideif
+#+begin_src emacs-lisp :lexical t
+  (use-package hideif
+    :custom
+    (hide-ifdef-shadow t)
+    (hide-ifdef-initially t))
+#+end_src
+
+**** hl-line
+#+begin_src emacs-lisp :lexical t
+  (use-package hl-line
+    ;; Highlight the current line
+    :hook ((prog-mode conf-mode text-mode) . hl-line-mode))
+#+end_src
+
+**** hideshow
+#+begin_src emacs-lisp :lexical t
+  (use-package hideshow
+    ;; Hide/show code blocks, a.k.a. code folding
+    :hook ((prog-mode conf-mode) . hs-minor-mode))
+#+end_src
+
+**** electric
+#+begin_src emacs-lisp :lexical t
+  (use-package electric
+    :config
+    ;; Electric indent on delete and enter
+    (setq-default electric-indent-chars '(?\n ?\^?))
+
+    (defvar-local +electric-indent-words '()
+      "The list of electric words. Typing these will trigger reindentation of the
+  current line.")
+
+    ;; Electric indent at Bash/Sh keywords, extracted from the grammar
+    (+setq-hook! (sh-mode bash-ts-mode)
+      +electric-indent-words
+      (delete-dups (apply #'append (mapcar (lambda (e) (list (car e) (cdr e))) (cdar sh-smie-sh-grammar)))))
+
+    ;; From Doom Emacs
+    (add-hook
+     'electric-indent-functions
+     (defun +electric-indent-char-fn (_c)
+       (when (and (eolp) +electric-indent-words)
+         (save-excursion
+           (backward-word)
+           (looking-at-p (concat "\\<" (regexp-opt +electric-indent-words))))))))
+#+end_src
+
+**** elec-pair
+#+begin_src emacs-lisp :lexical t
+  (use-package elec-pair
+    :init
+    (defun +electric-pair-tweaks-h ()
+      ;; Org mode tweaks
+      (with-eval-after-load 'elec-pair
+        (when (bound-and-true-p electric-pair-mode)
+          ;; Disable auto-pairing of "<" in `org-mode' when using `electric-pair-mode'
+          (setq-local electric-pair-inhibit-predicate
+                      `(lambda (char)
+                         (if (char-equal char ?<) t (,electric-pair-inhibit-predicate char)))))
+        (setq-local electric-pair-pairs (append electric-pair-pairs (alist-get major-mode +electric-pair-mode-pairs-alist)))))
+
+    (defvar +electric-pair-mode-pairs-alist
+      '((org-mode      . ((?= . ?=) (?~ . ?~) (?` . ?')))
+        (markdown-mode . ((?` . ?`) (?* . ?*)))))
+
+    ;; Add the hooks to the concerned modes
+    (dolist (mode (mapcar #'car +electric-pair-mode-pairs-alist))
+      (add-hook (intern (format "%s-hook" mode)) #'+electric-pair-tweaks-h))
+    (electric-pair-mode))
+#+end_src
+
+**** whitespace
+#+begin_src emacs-lisp :lexical t
+  (use-package whitespace
+    :custom
+    ;; Default behavior for `whitespace-cleanup'
+    (whitespace-action '(cleanup auto-cleanup)))
+#+end_src
+
+**** autorevert
+#+begin_src emacs-lisp :lexical t
+  (use-package autorevert
+    ;; Auto load files changed on disk
+    :init
+    (global-auto-revert-mode)
+    :custom
+    ;; Revert non-file buffers like dired
+    (global-auto-revert-non-file-buffers t))
+#+end_src
+
+**** savehist
+#+begin_src emacs-lisp :lexical t
+  (use-package savehist
+    :init (savehist-mode)
+    :custom
+    (savehist-file (concat my/cache-dir "savehist.el")))
+#+end_src
+
+**** saveplace
+#+begin_src emacs-lisp :lexical t
+  (use-package saveplace
+    ;; Save place in files
+    :init (save-place-mode)
+    :custom
+    (save-place-file (concat my/cache-dir "save-place.el")))
+#+end_src
+
+**** excutable
+Make scripts (files starting with shebang "#!") executable when saved
+#+begin_src emacs-lisp :lexicalt
+  (use-package executable
+    :hook (after-save . executable-make-buffer-file-executable-if-script-p))
+#+end_src
+
+**** display-line-numbers
+#+begin_src emacs-lisp :lexical t
+  (use-package display-line-numbers
+    ;; Show line numbers
+    :hook ((prog-mode conf-mode text-mode) . display-line-numbers-mode)
+    :custom
+    ;; Relative line numbering
+    (display-line-numbers-type 'relative)
+    ;; Width for line numbers
+    (display-line-numbers-width 4)
+    ;; Display absolute line numbers in narrowed regions
+    (display-line-numbers-widen t)
+    :config
+    ;; I don't want display line number in org mode
+    (add-hook 'org-mode-hook (lambda () (display-line-numbers-mode -1)))
+  )
+#+end_src
+
+**** pixel-scroll
+#+begin_src emacs-lisp :lexical t
+  (use-package pixel-scroll
+    ;; :after minemacs-loaded
+    :demand t
+    :custom
+    ;; Better scrolling on Emacs29+, specially on a touchpad
+    (pixel-scroll-precision-use-momentum t)
+    :config
+    ;; Scroll pixel by pixel, in Emacs29+ there is a more pricise mode way to scroll
+    (if (>= emacs-major-version 29)
+        (pixel-scroll-precision-mode 1)
+      (pixel-scroll-mode 1)))
+#+end_src
+
+**** mouse
+#+begin_src emacs-lisp :lexical t
+  (use-package mouse
+    ;; Enable context menu on mouse right click
+    :defer t
+    :init (context-menu-mode)
+    :custom
+    ;; Enable Drag-and-Drop of regions
+    (mouse-drag-and-drop-region t)
+    ;; Enable Drag-and-Drop of regions from Emacs to external programs
+    (mouse-drag-and-drop-region-cross-program t))
+
+    (use-package mwheel
+    :custom
+    ;; Make mouse scroll a little faster
+    (mouse-wheel-scroll-amount '(2 ((shift) . hscroll) ((meta) . nil) ((control meta) . global-text-scale) ((control) . text-scale)))
+    ;; Make mouse scroll a little faster horizontally
+    (mouse-wheel-scroll-amount-horizontal 2))
+#+end_src
+
+**** winner
+Window layout undo/redo (`winner-undo' / `winner-redo')
+#+begin_src emacs-lisp :lexical t
+(use-package winner
+  :hook (minemacs-after-startup . winner-mode))
+#+end_src
+
+**** so-long
+Better handling for files with so long lines
+#+begin_src emacs-lisp :lexical t
+(use-package so-long
+  :init (global-so-long-mode))
+#+end_src
+
+**** pulse
+Add visual pulse when changing focus, like beacon but built-in
+From: https://karthinks.com/software/batteries-included-with-emacs/
+#+begin_src emacs-lisp :lexical t
+(use-package pulse
+  :init
+  (defun +pulse-line (&rest _)
+    "Pulse the current line."
+    (pulse-momentary-highlight-one-line (point)))
+  (dolist (command '(scroll-up-command scroll-down-command recenter-top-bottom other-window))
+    (advice-add command :after #'+pulse-line)))
+#+end_src
+
+**** Fonts
+The configured font needs to support the unicode characters that are used by the modeline.
+The default font is good enough so let's not define additonal configuration here.
+#+begin_src emacs-lisp :lexical t
+(push '(font . "IBM Plex Mono-18") default-frame-alist)
+(set-face-font 'default "IBM Plex Mono-18")
+(set-face-font 'variable-pitch "DejaVu Sans")
+(copy-face 'default 'fixed-pitch)
+#+end_src
+
+*** Package Manager
+**** Elpaca
+Elpaca is an elisp package manager. It allows users to find, install, update, and remove third-party packages for Emacs. It is a replacement for the built-in Emacs package manager, package.el
+Github: https://github.com/progfolio/elpaca
+***** Installer
+#+begin_src emacs-lisp :lexical t
+  (defvar elpaca-installer-version 0.6)
+  (defvar elpaca-directory (expand-file-name "elpaca/" my/local-dir))
+  (defvar elpaca-builds-directory (expand-file-name "builds/" elpaca-directory))
+  (defvar elpaca-repos-directory (expand-file-name "repos/" elpaca-directory))
+  (defvar elpaca-order '(elpaca :repo "https://github.com/progfolio/elpaca.git"
+                                :ref nil
+                                :files (:defaults "elpaca-test.el" (:exclude "extensions"))
+                                :build (:not elpaca--activate-package)))
+  (let* ((repo  (expand-file-name "elpaca/" elpaca-repos-directory))
+        (build (expand-file-name "elpaca/" elpaca-builds-directory))
+        (order (cdr elpaca-order))
+        (default-directory repo))
+    (add-to-list 'load-path (if (file-exists-p build) build repo))
+    (unless (file-exists-p repo)
+      (make-directory repo t)
+      (when (< emacs-major-version 28) (require 'subr-x))
+      (condition-case-unless-debug err
+          (if-let ((buffer (pop-to-buffer-same-window "*elpaca-bootstrap*"))
+                  ((zerop (call-process "git" nil buffer t "clone"
+                                        (plist-get order :repo) repo)))
+                  ((zerop (call-process "git" nil buffer t "checkout"
+                                        (or (plist-get order :ref) "--"))))
+                  (emacs (concat invocation-directory invocation-name))
+                  ((zerop (call-process emacs nil buffer nil "-Q" "-L" "." "--batch"
+                                        "--eval" "(byte-recompile-directory \".\" 0 'force)")))
+                  ((require 'elpaca))
+                  ((elpaca-generate-autoloads "elpaca" repo)))
+              (progn (message "%s" (buffer-string)) (kill-buffer buffer))
+            (error "%s" (with-current-buffer buffer (buffer-string))))
+        ((error) (warn "%s" err) (delete-directory repo 'recursive))))
+    (unless (require 'elpaca-autoloads nil t)
+      (require 'elpaca)
+      (elpaca-generate-autoloads "elpaca" repo)
+      (load "./elpaca-autoloads")))
+  (add-hook 'after-init-hook #'elpaca-process-queues)
+  (elpaca `(,@elpaca-order))
+#+end_src
+***** use-package
+Configure elpace `use-package` integration so that the rest of the configuration just uses `use-package`.
+#+begin_src emacs-lisp :lexical t
+  (elpaca elpaca-use-package
+    ;; Enable :elpaca use-package keyword.
+    (elpaca-use-package-mode)
+    ;; Assume :elpaca t unless otherwise specified.
+    (setq elpaca-use-package-by-default t))
+
+  ;; Block until current queue processed.
+  (elpaca-wait)
+#+end_src
+
+***** use-feature
+There are cases where we want to use `use-package` with internal packages.
+In these cases `:elpaca nil` needs to be set. Let's create a macro `use-feature`
+that combines `use-package` with `:elpaca nil` nicely.
+
+Source: https://github.com/progfolio/.emacs.d/blob/master/init.org
+#+begin_src emacs-lisp :lexical t
+  (defmacro use-feature (name &rest args)
+    "Like `use-package' but accounting for asynchronous installation.
+    NAME and ARGS are in `use-package'."
+    (declare (indent defun))
+    `(use-package ,name
+       :elpaca nil
+       ,@args))
+#+end_src
+
+**** COMMENT MELPA
+Sometimes I want to use package-xxx commands and query MELPA.
+Since I don't do that often I expect this to be commented out most of the time.
+
+#+begin_src emacs-lisp
+  (require 'package)
+  (add-to-list 'package-archives
+    '("MELPA" .
+      "http://melpa.org/packages/"))
+  (package-initialize)
 #+end_src
 * Packages
 ** Evil (Like vim)
@@ -320,22 +1141,26 @@ https://github.com/emacs-evil/evil
 #+end_quote
 
 #+begin_src emacs-lisp :lexical t :noweb yes
-(use-package evil
-  :demand t
-  :preface (setq evil-want-keybinding nil)
-  :custom
-  (evil-symbol-word-search t "search by symbol with * and #.")
-  (evil-shift-width 2 "Same behavior for vim's '<' and '>' commands")
-  (evil-want-C-i-jump t)
-  (evil-complete-all-buffers nil)
-  (evil-want-integration t)
-  (evil-search-module 'evil-search "use vim-like search instead of 'isearch")
-  (evil-undo-system 'undo-redo)
-  :config
-  ;;I want Emacs regular mouse click behavior
-  (define-key evil-motion-state-map [down-mouse-1] nil)
-  <<+evil-kill-minibuffer>>
-  (evil-mode))
+  (use-package evil
+    :demand t
+    :preface (setq evil-want-keybinding nil)
+    :custom
+    (evil-symbol-word-search t "search by symbol with * and #.")
+    (evil-shift-width 2 "Same behavior for vim's '<' and '>' commands")
+    (evil-want-C-i-jump t)
+    (evil-complete-all-buffers nil)
+    (evil-want-integration t)
+    (evil-search-module 'evil-search "use vim-like search instead of 'isearch")
+    (evil-undo-system 'undo-redo)
+    (evil-kill-on-visual-paste nil)
+    :config
+    ;;I want Emacs regular mouse click behavior
+    (define-key evil-motion-state-map [down-mouse-1] nil)
+    ;;I want use Ctrl-f to consult-line
+    (define-key evil-motion-state-map "\C-f" nil)
+
+    <<+evil-kill-minibuffer>>
+    (evil-mode))
 #+end_src
 
 *** Evil mini-buffer bug
@@ -350,12 +1175,12 @@ https://github.com/syl20bnr/spacemacs/issues/10410
 Apparently this is a workaround:
 
 #+begin_src emacs-lisp :lexical t
-(defun +evil-kill-minibuffer ()
-  (interactive)
-  (when (windowp (active-minibuffer-window))
-    (evil-ex-search-exit)))
+  (defun +evil-kill-minibuffer ()
+    (interactive)
+    (when (windowp (active-minibuffer-window))
+      (evil-ex-search-exit)))
 
-(add-hook 'mouse-leave-buffer-hook #'+evil-kill-minibuffer)
+  (add-hook 'mouse-leave-buffer-hook #'+evil-kill-minibuffer)
 #+end_src
 
 Not sure why that hook is appropriate, but calling =evil-ex-search-exit= manually solves the issue as well.
@@ -366,15 +1191,15 @@ This is a collection of Evil bindings for the parts of Emacs that Evil does not 
 https://github.com/emacs-evil/evil-collection
 #+end_quote
 #+begin_src emacs-lisp :lexical t
-(use-package evil-collection
-  :elpaca (:remotes ("origin"
-                     ("fork" :repo "progfolio/evil-collection")))
-  :after (evil)
-  :config (evil-collection-init)
-  :custom
-  (evil-collection-elpaca-want-g-filters nil)
-  (evil-collection-setup-minibuffer t "Add evil bindings to minibuffer")
-  (evil-collection-ement-want-auto-retro t))
+  (use-package evil-collection
+    :elpaca (:remotes ("origin"
+                       ("fork" :repo "progfolio/evil-collection")))
+    :after (evil)
+    :config (evil-collection-init)
+    :custom
+    (evil-collection-elpaca-want-g-filters nil)
+    (evil-collection-setup-minibuffer t "Add evil bindings to minibuffer")
+    (evil-collection-ement-want-auto-retro t))
 #+end_src
 
 *** evil-snipe
@@ -392,15 +1217,36 @@ https://github.com/emacs-evil/evil-collection
 
 *** evil-nerd-commenter
 #+begin_src emacs-lisp :lexical t
-(use-package evil-nerd-commenter
-  :commands evilnc-comment-operator
-  :init
-  (+nvmap!
-    "gc" #'evilnc-comment-operator
-    "gC" #'evilnc-copy-and-comment-operator))
+  (use-package evil-nerd-commenter
+    :commands evilnc-comment-operator
+    :init
+    (+nvmap!
+      "gc" #'evilnc-comment-operator
+      "gC" #'evilnc-copy-and-comment-operator))
 #+end_src
 
-** General (key-bindings)
+** Key-Bindding
+*** Which-key
+#+begin_quote
+which-key is a minor mode for Emacs that displays the key bindings following your currently entered incomplete command (a prefix) in a popup.
+
+https://github.com/justbur/emacs-which-key
+#+end_quote
+
+#+begin_src emacs-lisp :lexical t
+  (use-package which-key
+    :diminish which-key-mode
+    :init
+    (which-key-mode)
+    :custom
+    (which-key-side-window-location 'bottom)
+    (which-key-sort-order 'which-key-key-order-alpha)
+    (which-key-side-window-max-width 0.33)
+    (which-key-idle-delay 0.2)
+  )
+#+end_src
+
+*** General (key-bindings)
 #+begin_quote
 general.el provides a more convenient method for binding keys in emacs (for both evil and non-evil users).
 
@@ -420,7 +1266,7 @@ Load general before the remaining packages so they can make use of the ~:general
   (elpaca-wait)
 #+end_src
 
-*** config
+**** config
 :PROPERTIES:
 :header-args: :tangle no :noweb-ref general-config
 :END:
@@ -447,6 +1293,27 @@ We define a global-leader definer to access major-mode specific bindings:
                 (replace-regexp-in-string "-mode$" "" (symbol-name major-mode))))))
 #+end_src
 
+;; To handle repeated "SPC u" like repeated "C-u"
+#+begin_src emacs-lisp :lexical t
+  (general-def
+    :keymaps 'universal-argument-map
+    :prefix "SPC"
+    :global-prefix "S-SPC"
+    "u" #'universal-argument-more)
+#+end_src
+
+**** Provide me-general-ready
+#+begin_src emacs-lisp :lexical t
+(provide 'me-general-ready)
+#+end_src
+
+*** Avy
+#+begin_src emacs-lisp :lexical t
+  (use-package avy
+    :bind (("C-;" . avy-goto-char-timer)
+           ("C-é" . avy-goto-line) ; French AZERTY
+           ("M-g l" . avy-goto-line)))
+#+end_src
 *** Bind
 #+begin_src emacs-lisp :lexical t
   (+leader-key!
@@ -492,25 +1359,139 @@ We define a global-leader definer to access major-mode specific bindings:
     "ft"   #'recover-this-file
     "fT"   #'recover-file
     "fy"   #'+yank-this-file-name
-    ;;"fE"   `(,(+cmdfy! (dired (or minemacs-config-dir minemacs-root-dir)))
-    ;;          :wk "User config directory")
+    "fE"   `(,(+cmdfy! (dired (or minemacs-config-dir minemacs-root-dir)))
+             :wk "User config directory")
+
+    ;; ====== Buffers ======
+    "b"    '(nil :wk "buffer")
+    "bI"   #'ibuffer
+    "bu"   #'+sudo-save-buffer
+    "bx"   #'bury-buffer
+    "bS"   #'save-some-buffers
+    "bs"   #'+scratch-open-project-scratch-buffer
+    "bM"   #'view-echo-area-messages
+    "bA"   #'+kill-some-buffers
+    "bk"   `(,(+cmdfy! (kill-buffer (current-buffer)))
+            :wk "Kill this buffer")
+    "bK"   `(,(+cmdfy! (+kill-buffer-and-its-windows (current-buffer)))
+            :wk "Kill this buffer and its windows")
+    "br"   '(revert-buffer :wk "Revert")
+    "bR"   '(rename-buffer :wk "Rename")
+    ;; Lines
+    "bl"   '(nil :wk "line")
+
+    ;; ====== Window ======
+    "w"    '(nil :wk "window")
+    "wd"   #'delete-window
+    "wD"   #'delete-windows-on
+    "wo"   #'delete-other-windows
+    "wm"   #'maximize-window
+    "wu"   #'winner-undo
+    "wU"   #'winner-redo
 
     ;; ====== Applications (Open) ======
     "o"    '(nil :wk "open")
     "o-"   '(dired :wk "Dired") ;; Will be overwritten if dirvish is used
-    )
+    "oa"   #'org-agenda
+
+    ;; ====== Search ======
+    "s"    '(nil :wk "search")
+
+    ;; ====== VC ======
+    "g"    '(nil :wk "git/vc")
+
+    ;; ====== Workspaces ======
+    "TAB"  '(nil :wk "workspace")
+
+    ;; ====== Code ======
+    "c"    '(nil :wk "code")
+    "cf"   '(nil :wk "format buffer")
+    "ce"   '(nil :wk "eglot session")
+    "cee"  #'eglot
+
+    ;; ====== Debug ======
+    "d"    '(nil :wk "debug")
+    "dG"   #'gdb
+
+    ;; ====== Notes ======
+    "n"    '(nil :wk "notes")
+
+     ;; ====== Help ======
+    "h"    '(nil :wk "help")
+    "hi"   #'info
+    "hg"   #'general-describe-keybindings
+    "he"   '(nil :wk "elisp/emacs")
+    "hes"  #'elisp-index-search
+    "hem"  #'info-emacs-manual
+    "hei"  #'Info-search
+    "hd"   '(nil :wk "describe")
+    "hdk"  #'describe-key
+    "hdm"  #'describe-keymap
+    "hdb"  #'describe-bindings
+    "hds"  #'describe-symbol
+    "hdv"  #'describe-variable
+    "hdc"  #'describe-command
+    "hdf"  #'describe-function
+    "hdp"  #'describe-package
+
+
+    ;; ====== Extras ======
+    "e"    '(nil :wk "extras")
+
+    ;; ====== Project ======
+    "p"    '(nil :wk "project")
+    "pw"  #'project-switch-project
+    "pc"  #'project-compile
+    "pd"  #'project-find-dir
+    "pf"  #'project-find-file
+    "pk"  #'project-kill-buffers
+    "pb"  #'project-switch-to-buffer
+    ;; "pa"  #'+project-add-project
+    ;; "pD"  #'+dir-locals-open-or-create
+    "p-"  #'project-dired
+    "px"  #'project-execute-extended-command
+    ;; compile/test
+    "pc" #'project-compile
+    ;; run
+    "pr"  '(nil :wk "run")
+    "pre" #'project-eshell
+    ;; "prg" #'+project-gdb
+    "prs" #'project-shell
+    "prc" #'project-shell-command
+    "prC" #'project-async-shell-command
+    ;; forget
+    "pF"  '(nil :wk "forget/cleanup")
+    "pFz" #'project-forget-zombie-projects
+    "pFp" #'project-forget-project
+    "pFu" #'project-forget-projects-under
+    ;; "pFc" #'+project-list-cleanup
+    ;; search/replace
+    "ps"  '(nil :wk "search/replace")
+    "pss" #'project-search
+    "psn" '(fileloop-continue :wk "Next match")
+    "psr" #'project-query-replace-regexp
+    "psf" #'project-find-regexp
+  )
 #+end_src
 
-*** Provide me-general-ready
+;; Exit minibuffer from anywhere
 #+begin_src emacs-lisp :lexical t
-(provide 'me-general-ready)
+  ;; Kill the minibuffer even when in another windown.
+  ;; Adapted from: trey-jackson.blogspot.com/2010/04/emacs-tip-36-abort-minibuffer-when.html
+  (defun +minibuffer-kill-minibuffer ()
+    "Kill the minibuffer from anywhere."
+    (interactive)
+    (when (and (>= (recursion-depth) 1) (active-minibuffer-window))
+      (abort-recursive-edit)))
+
+  (keymap-global-set "S-<escape>" #'+minibuffer-kill-minibuffer)
 #+end_src
 
 ** UI
 *** Theme
 I prefer to keep my themes in a sub-folder of =~/.emacs.d=
 #+begin_src emacs-lisp :lexical t
-(setq custom-theme-directory "~/.emacs.d/themes/")
+(setq custom-theme-directory (concat my/emacs-dir "themes/"))
 #+end_src
 
 I'm working on a theme that is readable and attractive.
@@ -560,23 +1541,24 @@ https://github.com/seagle0128/doom-modeline
 #+end_quote
 
 #+begin_src emacs-lisp :lexical t
-(use-package doom-modeline
-  :defer 2
-  :config
-  (column-number-mode 1)
-  (doom-modeline-mode)
-  :custom
-  (doom-modeline-icon t "Show icons in the modeline"))
+  (use-package doom-modeline
+    ;; :defer t
+    :config
+    (column-number-mode 1)
+    (size-indication-mode 1)
+    (doom-modeline-mode)
+    :custom
+    (doom-modeline-icon t "Show icons in the modeline"))
 #+end_src
 
 *** Treesit-auto
 #+begin_src emacs-lisp :lexical t
-(use-package treesit-auto
-  :custom
-  (treesit-auto-install 'prompt)
-  :config
-  (treesit-auto-add-to-auto-mode-alist 'all)
-  (global-treesit-auto-mode))
+  (use-package treesit-auto
+    :custom
+    (treesit-auto-install 'prompt)
+    :config
+    (treesit-auto-add-to-auto-mode-alist 'all)
+    (global-treesit-auto-mode))
 #+end_src
 
 ** Tools
@@ -588,38 +1570,22 @@ https://github.com/seagle0128/doom-modeline
 
 *** Undo
 #+begin_src emacs-lisp :lexical t
-  (use-package undo-tree
-    :config
-    (setq undo-tree-auto-save-history t
-          undo-tree-history-directory-alist `(("." . ,(concat my/local-dir "undo/"))))
-    :hook ((text-mode . undo-tree-mode)
-           (prog-mode . undo-tree-mode))
-    :init
-    (+nmap!
-      "u" 'undo-tree-undo
-      "U" 'undo-tree-redo))
-#+end_src
 
-*** Which-key
-#+begin_quote
-which-key is a minor mode for Emacs that displays the key bindings following your currently entered incomplete command (a prefix) in a popup.
-
-https://github.com/justbur/emacs-which-key
-#+end_quote
-
-#+begin_src emacs-lisp :lexical t
-(use-package which-key
-  :demand t
+;; Visual Undo
+(use-package vundo
   :init
-  (setq which-key-enable-extended-define-key t)
-  :config
-  (which-key-mode)
+  (+map! "ou" #'vundo)
   :custom
-  (which-key-side-window-location 'bottom)
-  (which-key-sort-order 'which-key-key-order-alpha)
-  (which-key-side-window-max-width 0.33)
-  (which-key-idle-delay 0.2)
-  :diminish which-key-mode)
+  (vundo-compact-display t)
+  (vundo-window-max-height 8)
+  (vundo-glyph-alist vundo-unicode-symbols))
+
+(use-package undo-fu-session
+  :init (undo-fu-session-global-mode)
+  :demand t
+  :custom
+  (undo-fu-session-compression (if (executable-find "zstd") 'zst 'gz))
+  (undo-fu-session-directory (concat my/cache-dir "undo-fu-session/")))
 #+end_src
 
 *** Term
@@ -629,14 +1595,42 @@ https://github.com/justbur/emacs-which-key
     :commands (vterm vterm-other-window)
     :init
     (+map!
-    "t" '(:ignore t :which-key "terminal")
-    "tt" 'vterm-other-window
-    "t." 'vterm)
+      "t" '(:ignore t :which-key "terminal")
+      "tt" 'vterm-other-window
+      "t." 'vterm)
     :custom
       (vterm-max-scrollback 5000)
       (vterm-tramp-shells '(("docker" "/bin/bash")))
     :config
       (evil-set-initial-state 'vterm-mode 'emacs))
+#+end_src
+
+*** Format
+#+begin_src emacs-lisp :lexical t
+  (use-package apheleia
+    :init
+    (+map! "cff" #'apheleia-format-buffer)
+  ) 
+    ;; :config
+    ;; Hack from Doom-Emacs
+    (cl-defun set-formatter! (name args &key modes)
+      (declare (indent defun))
+      (cl-check-type name symbol)
+      (after! apheleia
+        (if (null args)
+            (progn
+              (setq apheleia-formatters
+                    (assq-delete-all name apheleia-formatters))
+              (while (rassoc name apheleia-mode-alist)
+                (setq apheleia-mode-alist
+                      (assq-delete-all (car (rassoc name apheleia-mode-alist)) apheleia-mode-alist))))
+          (let ((formatter (cond
+                            ((listp args) `(,@args))
+                            (t args))))
+            (setf (alist-get name apheleia-formatters) formatter))
+          (when modes
+            (dolist (mode modes)
+              (setf (alist-get mode apheleia-mode-alist) name))))))
 #+end_src
 
 ** Completion
@@ -663,29 +1657,23 @@ https://github.com/justbur/emacs-which-key
            ("C-c p ^" . cape-tex)
            ("C-c p &" . cape-sgml)
            ("C-c p r" . cape-rfc1345))
-    :init
+    :config
+    ;; Silence the pcomplete capf, no errors or messages! Important for corfu!
+    (advice-add 'pcomplete-completions-at-point :around #'cape-wrap-silent)
+
+    (when (< emacs-major-version 29)
+      (advice-add 'pcomplete-completions-at-point :around #'cape-wrap-purify))
     ;; Add to the global default value of `completion-at-point-functions' which is
     ;; used by `completion-at-point'.  The order of the functions matters, the
     ;; first function returning a result wins.  Note that the list of buffer-local
     ;; completion functions takes precedence over the global list.
-    (add-to-list 'completion-at-point-functions #'cape-dabbrev)
-    (add-to-list 'completion-at-point-functions #'cape-file)
-    (add-to-list 'completion-at-point-functions #'cape-elisp-block)
-    ;;(add-to-list 'completion-at-point-functions #'cape-history)
-    ;;(add-to-list 'completion-at-point-functions #'cape-keyword)
-    ;;(add-to-list 'completion-at-point-functions #'cape-tex)
-    ;;(add-to-list 'completion-at-point-functions #'cape-sgml)
-    ;;(add-to-list 'completion-at-point-functions #'cape-rfc1345)
-    ;;(add-to-list 'completion-at-point-functions #'cape-abbrev)
-    ;;(add-to-list 'completion-at-point-functions #'cape-dict)
-    ;;(add-to-list 'completion-at-point-functions #'cape-elisp-symbol)
-    ;;(add-to-list 'completion-at-point-functions #'cape-line)
+    (+add-hook! 'completion-at-point-functions '(cape-file cape-elisp-block cape-keyword cape-dict))
 
-    :config
-    ;; Use Company backends as Capfs.
-    (setq-local completion-at-point-functions
-      (mapcar #'cape-company-to-capf
-        (list #'company-files #'company-keywords #'company-dabbrev)))
+    (+add-hook! (emacs-lisp-mode git-commit-mode)
+      (add-hook 'completion-at-point-functions #'cape-symbol nil t))
+
+    (+add-hook! (TeX-mode LaTeX-mode)
+      (add-hook 'completion-at-point-functions #'cape-tex nil t))
   )
 #+end_src
 
@@ -693,7 +1681,6 @@ https://github.com/justbur/emacs-which-key
 #+begin_src emacs-lisp :lexical t
   (use-package corfu
     :elpaca (corfu :host github :repo "minad/corfu" :files (:defaults "extensions/*.el"))
-    ;; :hook (minemacs-after-startup . global-corfu-mode)
     :hook (eshell-mode . +corfu-less-intrusive-h)
     :hook (minibuffer-setup . +corfu-enable-in-minibuffer-h)
     :bind (:map corfu-map
@@ -736,7 +1723,7 @@ https://github.com/justbur/emacs-which-key
 **** corfu-popupinfo
 #+begin_src emacs-lisp :lexical t
 (use-feature corfu-popupinfo
-  :hook (corfu-mode . corfu-popupinfo-mode)
+  :ghook 'corfu-mode-hook
   :bind (:package corfu
          :map corfu-map
          ("M-p" . corfu-popupinfo-scroll-down)
@@ -749,8 +1736,8 @@ https://github.com/justbur/emacs-which-key
 
 **** corfu-history
 #+begin_src emacs-lisp :lexical t
-  (use-feature corfu-popupinfo
-    :hook (corfu-mode . corfu-popupinfo-mode)
+  (use-feature corfu-history
+    :ghook 'corfu-mode-hook
     :config
     (unless (bound-and-true-p savehist-mode)
       (savehist-mode 1))
@@ -760,7 +1747,7 @@ https://github.com/justbur/emacs-which-key
 **** corfu-terminal
 #+begin_src emacs-lisp :lexical t
 (use-package corfu-terminal
-  :hook (corfu-mode . corfu-terminal-mode))
+  :ghook 'corfu-mode-hook)
 #+end_src
 
 **** nerd-icons-corfu
@@ -788,7 +1775,8 @@ https://github.com/justbur/emacs-which-key
 #+begin_src emacs-lisp :lexical t
   (use-package consult
     :hook (embark-collect-mode . consult-preview-at-point-mode)
-    :bind (:map minibuffer-local-map
+    :bind (("C-f" . consult-line)
+           :map minibuffer-local-map
            ("C-r" . consult-history)
            ("C-S-v" . consult-yank-pop)
            :package isearch
@@ -818,9 +1806,7 @@ https://github.com/justbur/emacs-which-key
       "gG"  #'consult-git-grep
       ;; search
       "ss"  (if (executable-find "rg") #'consult-ripgrep #'consult-grep)
-      "sS"  (if (executable-find "rg") #'consult-grep #'consult-ripgrep)
       "sf"  (if (executable-find "fd") #'consult-fd #'consult-find)
-      "sF"  (if (executable-find "fd") #'consult-find #'consult-fd)
       "sM"  #'consult-man
       "st"  #'consult-locate
       "sh"  #'consult-history
@@ -851,13 +1837,14 @@ https://github.com/justbur/emacs-which-key
     (setq-default completion-in-region-function #'consult-completion-in-region)
 
     ;; Fill the initial query of `consult' commands from region or thing at point.
-    (consult-customize
-     consult-find :initial (+region-or-thing-at-point)
-     consult-grep :initial (+region-or-thing-at-point)
-     consult-line :initial (+region-or-thing-at-point)
-     consult-line-multi :initial (+region-or-thing-at-point)
-     consult-man :initial (+region-or-thing-at-point)
-     consult-ripgrep :initial (+region-or-thing-at-point)))
+    ;; (consult-customize
+    ;;  consult-find :initial (+region-or-thing-at-point)
+    ;;  consult-grep :initial (+region-or-thing-at-point)
+    ;;  consult-line :initial (+region-or-thing-at-point)
+    ;;  consult-line-multi :initial (+region-or-thing-at-point)
+    ;;  consult-man :initial (+region-or-thing-at-point)
+    ;;  consult-ripgrep :initial (+region-or-thing-at-point))
+  )
 #+end_src
 
 **** consult-dir
@@ -961,6 +1948,9 @@ https://github.com/justbur/emacs-which-key
 
 **** vertico-repeat
 #+begin_src emacs-lisp :lexical t
+  (use-feature vertico-repeat
+    :hook (minibuffer-setup . vertico-repeat-save)
+    :bind ("M-R" . vertico-repeat))
 #+end_src
 
 ** Lang
@@ -974,4 +1964,28 @@ https://github.com/justbur/emacs-which-key
     ;; (with-eval-after-load 'eglot
     ;;   (when-let ((server (assoc 'nix-mode eglot-server-programs)))
     ;;     (setcar server '(nix-mode nix-ts-mode)))))
+    :config
+    (set-formatter! 'alejandra '("alejandra" "-q" "-") :modes '(nix-mode))
+#+end_src
+
+*** Markdown
+#+begin_src emacs-lisp :lexical t
+  (use-package markdown-mode
+    :mode ("README\\.md\\'" . gfm-mode)
+    :custom
+    (markdown-hide-markup t)
+    (markdown-enable-html t)
+    (markdown-enable-math t)
+    :config
+    (+map-local! :keymaps 'markdown-mode-map
+      "l"  '(nil :wk "link")
+      "ll" #'markdown-insert-link
+      "e"  #'markdown-export))
+#+end_src
+*** Org-mode
+**** toc-org
+#+begin_src emacs-lisp :lexical t
+  (use-package toc-org
+    :ghook '(org-mode-hook markdown-mode-hook)
+  )
 #+end_src
