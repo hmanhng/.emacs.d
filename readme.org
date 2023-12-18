@@ -10,11 +10,13 @@
   - [[#lib][Lib]]
   - [[#core][Core]]
 - [[#packages][Packages]]
+  - [[#package-manager][Package Manager]]
   - [[#evil-like-vim][Evil (Like vim)]]
   - [[#key-bindding][Key-Bindding]]
   - [[#ui][UI]]
   - [[#tools][Tools]]
   - [[#completion][Completion]]
+  - [[#eglot][Eglot]]
   - [[#lang][Lang]]
 
 * Bootstrap
@@ -309,176 +311,260 @@ Files, directories and IO helper functions
 
 *** Hack from Minemacs
 #+begin_src emacs-lisp :lexical t
-  (defmacro +cmdfy! (&rest body)
-    "Convert BODY to an interactive command."
-    `(lambda () (interactive) ,@body))
+;;; Missing primitive utilities
 
-  ;;; Missing primitive utilities
+;; See: emacs.stackexchange.com/q/3022/37002
+(defun +reset-sym (sym)
+  "Reset SYM to its standard value."
+  (set sym (eval (car (get sym 'standard-value)))))
 
-  ;; See: emacs.stackexchange.com/q/3022/37002
-  (defun +reset-sym (sym)
-    "Reset SYM to its standard value."
-    (set sym (eval (car (get sym 'standard-value)))))
+(defmacro +reset-var! (var)
+  "Reset VAR to its standard value."
+  `(setq ,var (eval (car (get ',var 'standard-value)))))
 
-  (defmacro +reset-var! (var)
-    "Reset VAR to its standard value."
-    `(setq ,var (eval (car (get ',var 'standard-value)))))
+;; Adapted from `evil-unquote', takes functions into account
+(defun +unquote (expr)
+  "Return EXPR unquoted."
+  (declare (pure t) (side-effect-free t))
+  (while (memq (car-safe expr) '(quote function))
+    (setq expr (cadr expr)))
+  expr)
 
-  ;; Adapted from `evil-unquote', takes functions into account
-  (defun +unquote (expr)
-    "Return EXPR unquoted."
-    (declare (pure t) (side-effect-free t))
-    (while (memq (car-safe expr) '(quote function))
-      (setq expr (cadr expr)))
-    expr)
+(defun +quoted-p (expr)
+  "Return t when EXPR is quoted."
+  (memq (car-safe expr) '(quote function)))
 
-  (defun +quoted-p (expr)
-    "Return t when EXPR is quoted."
-    (memq (car-safe expr) '(quote function)))
+(defun +apply-partially-right (fun &rest args)
+  "Like `apply-partially', but apply the ARGS to the right of FUN."
+  (lambda (&rest args2)
+    (apply fun (append args2 args))))
 
-  (defun +apply-partially-right (fun &rest args)
-    "Like `apply-partially', but apply the ARGS to the right of FUN."
-    (lambda (&rest args2)
-      (apply fun (append args2 args))))
+;;; Minemacs' core functions and macros
+(defvar minemacs-msg-level 3)
+(defmacro +log! (msg &rest vars)
+ "Log MSG and VARS using `message' when `minemacs-verbose-p' is non-nil."
+ (when (>= minemacs-msg-level 3)
+   `(let ((inhibit-message t))
+     (apply #'message (list (concat "[MinEmacs:Log] " ,msg) ,@vars)))))
 
-  ;; From Doom Emacs
-  (defun +resolve-hook-forms (hooks)
-    "Convert a list of modes into a list of hook symbols.
+(defmacro +cmdfy! (&rest body)
+  "Convert BODY to an interactive command."
+  `(lambda () (interactive) ,@body))
 
-  If a mode is quoted, it is left as is. If the entire HOOKS list is quoted, the
-  list is returned as-is."
-    (declare (pure t) (side-effect-free t))
-    (let ((hook-list (ensure-list (+unquote hooks))))
-      (if (eq (car-safe hooks) 'quote)
-          hook-list
-        (cl-loop for hook in hook-list
-                 if (eq (car-safe hook) 'quote)
-                 collect (cadr hook)
-                 else collect (intern (format "%s-hook" (symbol-name hook)))))))
+(defvar +eval-when-idle--task-num 0)
+(defvar +eval-when-idle-delay 5.0)
 
-  (defun +setq-hook-fns (hooks rest &optional singles)
-    (unless (or singles (= 0 (% (length rest) 2)))
-      (signal 'wrong-number-of-arguments (list #'evenp (length rest))))
-    (cl-loop with vars = (let ((args rest)
-                               vars)
-                           (while args
-                             (push (if singles
-                                       (list (pop args))
-                                     (cons (pop args) (pop args)))
-                                   vars))
-                           (nreverse vars))
-             for hook in (+resolve-hook-forms hooks)
-             append
-             (cl-loop for (var . val) in vars
-                      collect
-                      (list var val hook
-                            (intern (format "+setq--%s-in-%s-h"
-                                            var hook))))))
+(defun +eval-when-idle (delay &rest fns)
+  "Queue FNS to be processed when Emacs becomes idle after DELAY seconds."
+  (let* ((task-num (cl-incf +eval-when-idle--task-num))
+        (task-name (make-symbol (format "+eval-when-idle--task-%d" task-num))))
+    (with-memoization (get task-name 'timer)
+      (run-with-idle-timer
+      delay t
+      (lambda ()
+        (when-let (fn (pop fns))
+          (+log! "Running task %d, calling function `%s'" task-num (truncate-string-to-width (format "%s" fn) 40 nil nil "…"))
+          (funcall fn))
+        (unless fns
+          (cancel-timer (get task-name 'timer))
+          (put task-name 'timer nil)))))))
 
-  (defmacro +add-hook! (hooks &rest rest)
-    "A convenience macro for adding N functions to M hooks.
+(defmacro +eval-when-idle! (&rest body)
+  "Evaluate BODY when Emacs becomes idle."
+  (declare (indent 0))
+  `(+eval-when-idle ,+eval-when-idle-delay (lambda () ,@body)))
 
-  This macro accepts, in order:
+(defmacro +make-first-file-hook! (filetype ext-regexp)
+  "Make a hook which run on the first FILETYPE file of a particular extensions.
+The extension should matches EXT-REGEXP.
 
-    1. The mode(s) or hook(s) to add to. This is either an unquoted mode, an
-       unquoted list of modes, a quoted hook variable or a quoted list of hook
-       variables.
-    2. Optional properties :local, :append, and/or :depth [N], which will make the
-       hook buffer-local or append to the list of hooks (respectively),
-    3. The function(s) to be added: this can be a quoted function, a quoted list
-       thereof, a list of `defun' or `cl-defun' forms, or arbitrary forms (will
-       implicitly be wrapped in a lambda).
+This will creates a function named `+first-file--FILETYPE-h' which gets executed
+before `after-find-file'. This function will run on the first file that matches
+EXT-REGEXP. When it runs, this function provides a feature named
+`minemacs-first-FILETYPE-file' and a run all hooks in
+`minemacs-first-FILETYPE-file-hook'."
+  (let* ((filetype (+unquote filetype))
+         (fn-name (intern (format "+first-file-%s-h" (if filetype (format "-%s" filetype) ""))))
+         (hook-name (intern (format "minemacs-first%s-file-hook" (if filetype (format "-%s" filetype) ""))))
+         (feature-name (intern (format "minemacs-first%s-file" (if filetype (format "-%s" filetype) ""))))
+         (hook-docs (format "This hook will be run after opening the first %s file (files that matches \"%s\").
+Executed before `after-find-file', it runs all hooks in `%s' and provide the `%s' feature."
+                            filetype ext-regexp hook-name feature-name)))
+    `(progn
+       (+log! "Setting up hook `%s' -- function `%s' -- feature `%s'."
+        ',hook-name ',fn-name ',feature-name)
+       (defvar ,hook-name nil ,hook-docs)
+       (defun ,fn-name (&rest _)
+        (when (and
+               after-init-time ; after Emacs initialization
+               ;; (featurep 'minemacs-loaded) ; after MinEmacs is loaded
+               (buffer-file-name) ; for named files
+               (string-match-p ,ext-regexp (buffer-file-name))) ; file name matches the regexp
+         (+log! "Running %d `%s' hooks." (length ,hook-name) ',hook-name)
+         (advice-remove 'after-find-file #',fn-name)
+         (provide ',feature-name)
+         (run-hooks ',hook-name)))
+       (if (daemonp)
+           ;; Load immediately after init when in daemon mode
+           (add-hook 'after-init-hook (lambda () (provide ',feature-name) (run-hooks ',hook-name)) #',fn-name 90)
+         (advice-add 'after-find-file :before #',fn-name '((depth . -101)))))))
 
-  If the hook function should receive an argument (like in
-  `enable-theme-functions'), the `args' variable can be expanded in the forms
+;; ========= Make some special hooks =========
+(+make-first-file-hook! 'org "\\.org$")
+(+make-first-file-hook! 'elisp "\\.elc?$")
+(+make-first-file-hook! nil ".")
 
-    (+add-hook! \\='enable-theme-functions
-      (message \"Enabled theme: %s\" (car args)))
+;; From Doom Emacs
+(defun +resolve-hook-forms (hooks)
+  "Convert a list of modes into a list of hook symbols.
 
-  \(fn HOOKS [:append :local [:depth N]] FUNCTIONS-OR-FORMS...)"
-    (declare (indent (lambda (indent-point state)
-                       (goto-char indent-point)
-                       (when (looking-at-p "\\s-*(")
-                         (lisp-indent-defform state indent-point))))
-             (debug t))
-    (let* ((hook-forms (+resolve-hook-forms hooks))
-           (func-forms ())
-           (defn-forms ())
-           append-p local-p remove-p depth)
-      (while (keywordp (car rest))
-        (pcase (pop rest)
-          (:append (setq append-p t))
-          (:depth  (setq depth (pop rest)))
-          (:local  (setq local-p t))
-          (:remove (setq remove-p t))))
-      (while rest
-        (let* ((next (pop rest))
-               (first (car-safe next)))
-          (push (cond ((memq first '(function nil))
-                       next)
-                      ((eq first 'quote)
-                       (let ((quoted (cadr next)))
-                         (if (atom quoted)
-                             next
-                           (when (cdr quoted)
-                             (setq rest (cons (list first (cdr quoted)) rest)))
-                           (list first (car quoted)))))
-                      ((memq first '(defun cl-defun))
-                       (push next defn-forms)
-                       (list 'function (cadr next)))
-                      ((prog1 `(lambda (&rest args) ,@(cons next rest))
-                         (setq rest nil))))
-                func-forms)))
-      `(progn
-         ,@defn-forms
-         (dolist (hook (nreverse ',hook-forms))
-          (dolist (func (list ,@func-forms))
-           ,(if remove-p
-                `(remove-hook hook func ,local-p)
-              `(add-hook hook func ,(or depth append-p) ,local-p)))))))
-  ;; From Doom Emacs
-  (defmacro +remove-hook! (hooks &rest rest)
-    "A convenience macro for removing N functions from M hooks.
+If a mode is quoted, it is left as is. If the entire HOOKS list is quoted, the
+list is returned as-is."
+  (declare (pure t) (side-effect-free t))
+  (let ((hook-list (ensure-list (+unquote hooks))))
+    (if (eq (car-safe hooks) 'quote)
+        hook-list
+      (cl-loop for hook in hook-list
+               if (eq (car-safe hook) 'quote)
+               collect (cadr hook)
+               else collect (intern (format "%s-hook" (symbol-name hook)))))))
 
-  Takes the same arguments as `add-hook!'.
+(defun +setq-hook-fns (hooks rest &optional singles)
+  (unless (or singles (= 0 (% (length rest) 2)))
+    (signal 'wrong-number-of-arguments (list #'evenp (length rest))))
+  (cl-loop with vars = (let ((args rest)
+                             vars)
+                         (while args
+                           (push (if singles
+                                     (list (pop args))
+                                   (cons (pop args) (pop args)))
+                                 vars))
+                         (nreverse vars))
+           for hook in (+resolve-hook-forms hooks)
+           append
+           (cl-loop for (var . val) in vars
+                    collect
+                    (list var val hook
+                          (intern (format "+setq--%s-in-%s-h"
+                                          var hook))))))
 
-  If N = 1 and M = 1, there's no benefit to using this macro over `remove-hook'.
+(defmacro +add-hook! (hooks &rest rest)
+  "A convenience macro for adding N functions to M hooks.
 
-  \(fn HOOKS [:append :local] FUNCTIONS)"
-    (declare (indent defun) (debug t))
-    `(+add-hook! ,hooks :remove ,@rest))
+This macro accepts, in order:
 
-  ;; From Doom Emacs
-  (defmacro +setq-hook! (hooks &rest var-vals)
-    "Set buffer-local variables on HOOKS.
+  1. The mode(s) or hook(s) to add to. This is either an unquoted mode, an
+     unquoted list of modes, a quoted hook variable or a quoted list of hook
+     variables.
+  2. Optional properties :local, :append, and/or :depth [N], which will make the
+     hook buffer-local or append to the list of hooks (respectively),
+  3. The function(s) to be added: this can be a quoted function, a quoted list
+     thereof, a list of `defun' or `cl-defun' forms, or arbitrary forms (will
+     implicitly be wrapped in a lambda).
 
-  HOOKS can be expect receiving arguments (like in `enable-theme-functions'), the
-  `args' variable can be used inside VAR-VALS forms to get the arguments passed
-  the the function.
+If the hook function should receive an argument (like in
+`enable-theme-functions'), the `args' variable can be expanded in the forms
 
-    (+setq-hook! \\='enable-theme-functions
-      current-theme (car args))
+  (+add-hook! \\='enable-theme-functions
+    (message \"Enabled theme: %s\" (car args)))
 
-  \(fn HOOKS &rest [SYM VAL]...)"
-    (declare (indent 1))
-    (macroexp-progn
-    (cl-loop for (var val hook fn) in (+setq-hook-fns hooks var-vals)
-              collect `(defun ,fn (&rest args)
-                        ,(format "%s = %s" var (pp-to-string val))
-                        (setq-local ,var ,val))
-              collect `(add-hook ',hook #',fn -90))))
+\(fn HOOKS [:append :local [:depth N]] FUNCTIONS-OR-FORMS...)"
+  (declare (indent (lambda (indent-point state)
+                     (goto-char indent-point)
+                     (when (looking-at-p "\\s-*(")
+                       (lisp-indent-defform state indent-point))))
+           (debug t))
+  (let* ((hook-forms (+resolve-hook-forms hooks))
+         (func-forms ())
+         (defn-forms ())
+         append-p local-p remove-p depth)
+    (while (keywordp (car rest))
+      (pcase (pop rest)
+        (:append (setq append-p t))
+        (:depth  (setq depth (pop rest)))
+        (:local  (setq local-p t))
+        (:remove (setq remove-p t))))
+    (while rest
+      (let* ((next (pop rest))
+             (first (car-safe next)))
+        (push (cond ((memq first '(function nil))
+                     next)
+                    ((eq first 'quote)
+                     (let ((quoted (cadr next)))
+                       (if (atom quoted)
+                           next
+                         (when (cdr quoted)
+                           (setq rest (cons (list first (cdr quoted)) rest)))
+                         (list first (car quoted)))))
+                    ((memq first '(defun cl-defun))
+                     (push next defn-forms)
+                     (list 'function (cadr next)))
+                    ((prog1 `(lambda (&rest args) ,@(cons next rest))
+                       (setq rest nil))))
+              func-forms)))
+    `(progn
+       ,@defn-forms
+       (dolist (hook (nreverse ',hook-forms))
+        (dolist (func (list ,@func-forms))
+         ,(if remove-p
+              `(remove-hook hook func ,local-p)
+            `(add-hook hook func ,(or depth append-p) ,local-p)))))))
+;; From Doom Emacs
+(defmacro +remove-hook! (hooks &rest rest)
+  "A convenience macro for removing N functions from M hooks.
 
-  ;; From Doom Emacs
-  (defmacro +unsetq-hook! (hooks &rest vars)
-    "Unbind setq hooks on HOOKS for VARS.
+Takes the same arguments as `add-hook!'.
 
-  \(fn HOOKS &rest VAR1 VAR2...)"
-    (declare (indent 1))
-    (macroexp-progn
-    (cl-loop for (_var _val hook fn)
-              in (+setq-hook-fns hooks vars 'singles)
-              collect `(remove-hook ',hook #',fn))))
+If N = 1 and M = 1, there's no benefit to using this macro over `remove-hook'.
 
+\(fn HOOKS [:append :local] FUNCTIONS)"
+  (declare (indent defun) (debug t))
+  `(+add-hook! ,hooks :remove ,@rest))
+
+;; From Doom Emacs
+(defmacro +setq-hook! (hooks &rest var-vals)
+  "Set buffer-local variables on HOOKS.
+
+HOOKS can be expect receiving arguments (like in `enable-theme-functions'), the
+`args' variable can be used inside VAR-VALS forms to get the arguments passed
+the the function.
+
+  (+setq-hook! \\='enable-theme-functions
+    current-theme (car args))
+
+\(fn HOOKS &rest [SYM VAL]...)"
+  (declare (indent 1))
+  (macroexp-progn
+  (cl-loop for (var val hook fn) in (+setq-hook-fns hooks var-vals)
+            collect `(defun ,fn (&rest args)
+                      ,(format "%s = %s" var (pp-to-string val))
+                      (setq-local ,var ,val))
+            collect `(add-hook ',hook #',fn -90))))
+
+;; From Doom Emacs
+(defmacro +unsetq-hook! (hooks &rest vars)
+  "Unbind setq hooks on HOOKS for VARS.
+
+\(fn HOOKS &rest VAR1 VAR2...)"
+  (declare (indent 1))
+  (macroexp-progn
+  (cl-loop for (_var _val hook fn)
+            in (+setq-hook-fns hooks vars 'singles)
+            collect `(remove-hook ',hook #',fn))))
+
+;; Adapted from: Doom Emacs
+(defun +compile-functions (&rest fns)
+  "Queue FNS to be byte/natively-compiled after a brief delay."
+  (dolist (fn fns)
+    (+eval-when-idle!
+      (or (and (featurep 'native-compile)
+              (or (subr-native-elisp-p (indirect-function fn))
+                  ;; Do not log to `comp-log-buffer-name'
+                  (cl-letf (((symbol-function 'comp-log-to-buffer) #'ignore))
+                    (+shutup! (ignore-errors (native-compile fn))))))
+          (byte-code-function-p fn)
+          (let (byte-compile-warnings)
+            (+shutup! (byte-compile fn)))))))
 #+end_src
 *** Hack from Doom-emacs
 #+begin_src emacs-lisp :lexical t
@@ -569,8 +655,38 @@ Files, directories and IO helper functions
   (use-package emacs
     :hook (after-save . +save--guess-file-mode-h)
     :custom
-    (auto-save-list-file-prefix (concat my/cache-dir "auto-save/"))
-    (backup-directory-alist (list (cons "." (concat my/cache-dir "backup/"))))
+    ;; ====== Default directories for builtin packages ======
+    (auto-save-list-file-prefix (+directory-ensure my/cache-dir "auto-save/"))
+    (backup-directory-alist (list (cons "." (+directory-ensure my/cache-dir "backup/"))))
+    (diary-file (concat my/cache-dir "diary"))
+    (ecomplete-database-file (concat my/cache-dir "ecomplete-database.el"))
+    (ede-project-placeholder-cache-file (concat my/cache-dir "ede-projects.el"))
+    (erc-dcc-get-default-directory (+directory-ensure my/cache-dir "erc/dcc/"))
+    (erc-log-channels-directory (+directory-ensure my/cache-dir "erc/log-channels/"))
+    (eudc-options-file (concat my/cache-dir "eudc-options.el"))
+    (eww-bookmarks-directory (+directory-ensure my/cache-dir "eww/bookmarks/"))
+    (fortune-dir (+directory-ensure my/cache-dir "fortune/"))
+    (fortune-file (expand-file-name "local" fortune-dir))
+    (ido-save-directory-list-file (concat my/cache-dir "ido-save-directory-list.el"))
+    (kkc-init-file-name (concat my/cache-dir "kkc-init.el"))
+    (multisession-dir (concat my/cache-dir "multisession/"))
+    (newsticker-cache-filename (concat my/cache-dir "newsticker/cache.el"))
+    (newsticker-dir (+directory-ensure my/cache-dir "newsticker/data/"))
+    (nsm-settings-file (concat my/cache-dir "nsm-settings.el"))
+    (quickurl-url-file (concat my/cache-dir "quickurl-url.el"))
+    (rcirc-log-directory (+directory-ensure my/cache-dir "rcirc/log/"))
+    (remember-data-directory (+directory-ensure my/cache-dir "remember/data/"))
+    (remember-data-file (concat my/cache-dir "remember/data.el"))
+    (semanticdb-default-system-save-directory (concat my/cache-dir "semantic/"))
+    (shadow-info-file (concat my/cache-dir "shadow/info.el"))
+    (shadow-todo-file (concat my/cache-dir "shadow/todo.el"))
+    (shared-game-score-directory (+directory-ensure my/cache-dir "shared-game-score/"))
+    (srecode-map-save-file (concat my/cache-dir "srecode-map.el"))
+    (timeclock-file (concat my/cache-dir "timeclock"))
+    (type-break-file-name (concat my/cache-dir "type-break.el"))
+    (viper-custom-file-name (concat my/cache-dir "viper.el"))
+
+    ;; ====== Better defaults ======
     ;; Enable auto-save (use `recover-file' or `recover-session' to recover)
     (auto-save-default t)
     ;; Include big deletions
@@ -728,7 +844,13 @@ Files, directories and IO helper functions
           (and (buffer-file-name buffer)
               (eq buffer (window-buffer (selected-window))) ;; Only visible buffers
               (set-auto-mode)))))
-  )
+    ;; Advice `emacs-session-filename' to ensure creating "session.ID" files in a sub-directory
+    (advice-add
+    #'emacs-session-filename :filter-return
+    (defun +emacs-session-filename--in-subdir-a (session-filename)
+      "Put the SESSION-FILENAME in the \"x-win/\" sub-directory."
+      (concat (+directory-ensure my/cache-dir "x-win/")
+              (file-name-nondirectory session-filename)))))
 #+end_src
 
 **** simple
@@ -747,10 +869,10 @@ Files, directories and IO helper functions
 #+end_src
 
 **** help
-Select help window for faster quit!
 #+begin_src emacs-lisp :lexical t
 (use-package help
   :custom
+  ;; Select help window for faster quit!
   (help-window-select t))
 #+end_src
 
@@ -775,6 +897,15 @@ Select help window for faster quit!
     (dired-auto-revert-buffer t))
 #+end_src
 
+**** image-dired
+#+begin_src emacs-lisp :lexical t
+(use-package image-dired
+  :custom
+  (image-dired-dir (+directory-ensure my/cache-dir "image-dired/"))
+  (image-dired-tags-db-file (concat my/cache-dir "image-dired/tags-db.el"))
+  (image-dired-temp-rotate-image-file (concat my/cache-dir "image-dired/temp-rotate-image")))
+#+end_src
+
 **** project
 #+begin_src emacs-lisp :lexical t
 (use-package project
@@ -783,6 +914,49 @@ Select help window for faster quit!
   :custom
   (project-list-file (concat my/cache-dir "project-list.el"))
   (project-vc-extra-root-markers '(".projectile.el" ".project.el" ".project")))
+#+end_src
+
+**** tab-bar
+#+begin_src emacs-lisp :lexical t
+  (use-package tab-bar
+    ;; :hook (minemacs-after-startup . tab-bar-mode)
+    ;; :init (tab-bar-mode)
+    :custom
+    (tab-bar-format '(tab-bar-format-history tab-bar-format-tabs tab-bar-separator))
+    (tab-bar-tab-name-format-function #'+tab-bar-tab-spaced-name-format)
+    (tab-bar-close-button-show nil)
+    (tab-bar-auto-width-max '(150 20))
+    (tab-bar-tab-hints t)
+    (tab-bar-show nil)
+    :config
+    (defun +tab-bar-tab-spaced-name-format (tab i)
+      (let ((current-p (eq (car tab) 'current-tab)))
+        (propertize
+         (concat (if tab-bar-tab-hints (format " %c " (+ ?❶ (1- i))) "")
+                 (alist-get 'name tab)
+                 (or (and tab-bar-close-button-show
+                          (not (eq tab-bar-close-button-show
+                                   (if current-p 'non-selected 'selected)))
+                          tab-bar-close-button)
+                     ""))
+         'face (funcall tab-bar-tab-face-function tab))))
+    (with-eval-after-load 'nerd-icons
+      (setq tab-bar-close-button
+            (propertize (concat (nerd-icons-faicon "nf-fa-close" :height 0.5) " ")
+                        'close-tab t :help "Click to close tab"))))
+#+end_src
+
+**** eshell
+#+begin_src emacs-lisp :lexical t
+  (use-package eshell
+    :custom
+    (eshell-aliases-file (concat my/cache-dir "eshell/aliases"))
+    (eshell-directory-name (+directory-ensure my/cache-dir "eshell/"))
+    (eshell-history-file-name (concat my/cache-dir "eshell/history.el"))
+    (eshell-last-dir-ring-file-name (concat my/cache-dir "eshell/last-dir-ring.el"))
+    (eshell-login-script (concat my/cache-dir "eshell/login"))
+    (eshell-rc-script (concat my/cache-dir "eshell/rc"))
+    (eshell-scroll-to-bottom-on-input 'this))
 #+end_src
 
 **** reftex
@@ -844,6 +1018,13 @@ Select help window for faster quit!
     :mode "\\.cmake\\'")
 #+end_src
 
+**** autoinsert
+#+begin_src emacs-lisp :lexical t
+  (use-package autoinsert
+    :custom
+    (auto-insert-directory (+directory-ensure my/cache-dir "auto-insert/")))
+#+end_src
+
 **** hideif
 #+begin_src emacs-lisp :lexical t
   (use-package hideif
@@ -864,6 +1045,309 @@ Select help window for faster quit!
   (use-package hideshow
     ;; Hide/show code blocks, a.k.a. code folding
     :hook ((prog-mode conf-mode) . hs-minor-mode))
+#+end_src
+
+**** xref
+#+begin_src emacs-lisp :lexical t
+  (use-package xref
+    :custom
+    ;; Use completion in the minibuffer instead of definitions buffer
+    (xref-show-definitions-function #'xref-show-definitions-completing-read))
+#+end_src
+
+**** eldoc
+#+begin_src emacs-lisp :lexical t
+  (use-package eldoc
+    :custom
+    (eldoc-documentation-strategy #'eldoc-documentation-compose))
+#+end_src
+
+**** compile
+#+begin_src emacs-lisp :lexical t
+  
+#+end_src
+
+**** -mode
+***** vhdl-mode
+#+begin_src emacs-lisp :lexical t
+  (use-package vhdl-mode
+    :config
+    ;; Setup vhdl_ls from rust_hdl (AUR: rust_hdl-git)
+    (+eglot-register 'vhdl-mode "vhdl_ls"))
+#+end_src
+
+***** verilog-mode
+#+begin_src emacs-lisp :lexical t
+  (use-package verilog-mode
+    :config
+    ;; Setup Verilog/SystemVerilog LSP servers
+    (+eglot-register 'verilog-mode "svls" "verible-verilog-ls" "svlangserver"))
+#+end_src
+
+***** nxml-mode
+#+begin_src emacs-lisp :lexical t
+  (use-package nxml-mode
+    :mode "\\.xmpi\\'"
+    :config
+    (+eglot-register '(nxml-mode xml-mode) "lemminx"))
+#+end_src
+
+***** elisp-mode
+#+begin_src emacs-lisp :lexical t
+  (use-package elisp-mode
+    :hook (emacs-lisp-mode . (lambda () (setq-local tab-width 8))) ;; to view built-in packages correctly
+    :after minemacs-first-elisp-file ; prevent elisp-mode from being loaded too early
+    :init
+    (+map-local! :keymaps '(emacs-lisp-mode-map lisp-interaction-mode-map ielm-map lisp-mode-map racket-mode-map scheme-mode-map)
+      "p" #'check-parens)
+    :config
+    (+map-local! :keymaps '(emacs-lisp-mode-map lisp-interaction-mode-map)
+      "d"   '(nil :wk "edebug")
+      "df"  #'edebug-defun
+      "dF"  #'edebug-all-forms
+      "dd"  #'edebug-all-defs
+      "dr"  #'edebug-remove-instrumentation
+      "do"  #'edebug-on-entry
+      "dO"  #'edebug-cancel-on-entry
+      "db"  '(nil :wk "breakpoints")
+      "dbb" #'edebug-set-breakpoint
+      "dbr" #'edebug-unset-breakpoint
+      "dbn" #'edebug-next-breakpoint
+      "e"   '(nil :wk "eval")
+      "eb"  #'eval-buffer
+      "ed"  #'eval-defun
+      "ee"  #'eval-last-sexp
+      "er"  #'eval-region
+      "eR"  #'elisp-eval-region-or-buffer
+      "el"  #'load-library
+      "g"   '(nil :wk "goto/find")
+      "gf"  #'find-function-at-point
+      "gR"  #'find-function
+      "gv"  #'find-variable-at-point
+      "gV"  #'find-variable
+      "gL"  #'find-library
+      "c"   '(nil :wk "compile")
+      "cc"  #'elisp-byte-compile-buffer
+      "cf"  #'elisp-byte-compile-file
+      "cn"  #'emacs-lisp-native-compile-and-load
+      "cb"  #'emacs-lisp-byte-compile-and-load)
+    (+map-local! :keymaps '(edebug-mode-map)
+      "e"   '(nil :wk "eval")
+      "ee"  #'edebug-eval-last-sexp
+      "eE"  #'edebug-eval-expression
+      "et"  #'edebug-eval-top-level-form)
+
+    (defvar +emacs-lisp--face nil)
+    (defvar +calculate-lisp-indent-check-for-keyword nil)
+    (autoload #'ad-get-orig-definition "advice")
+
+    ;; Extracted from:
+    ;; github.com/doomemacs/doomemacs/blob/master/modules/lang/emacs-lisp/autoload.el
+    (defun +emacs-lisp--highlight-vars-and-faces (end)
+      "Match defined variables and functions.
+  Functions are differentiated into \"special forms\", \"built-in functions\" and
+  \"library/userland functions\"."
+      (catch 'matcher
+        (while (re-search-forward "\\(?:\\sw\\|\\s_\\)+" end t)
+          (let ((ppss (save-excursion (syntax-ppss))))
+            (cond ((nth 3 ppss)  ; strings
+                   (search-forward "\"" end t))
+                  ((nth 4 ppss)  ; comments
+                   (forward-line +1))
+                  ((let ((symbol (intern-soft (match-string-no-properties 0))))
+                     (and (cond ((null symbol) nil)
+                                ((eq symbol t) nil)
+                                ((keywordp symbol) nil)
+                                ((special-variable-p symbol)
+                                 (setq +emacs-lisp--face 'font-lock-variable-name-face))
+                                ((and (fboundp symbol)
+                                      (eq (char-before (match-beginning 0)) ?\()
+                                      (not (memq (char-before (1- (match-beginning 0)))
+                                                 (list ?\' ?\`))))
+                                 (let ((unaliased (indirect-function symbol)))
+                                   (unless (or (macrop unaliased)
+                                               (special-form-p unaliased))
+                                     (let (unadvised)
+                                       (while (not (eq (setq unadvised (ad-get-orig-definition unaliased))
+                                                       (setq unaliased (indirect-function unadvised)))))
+                                       unaliased)
+                                     (setq +emacs-lisp--face
+                                           (if (subrp unaliased)
+                                               'font-lock-constant-face
+                                             'font-lock-function-name-face))))))
+                          (throw 'matcher t)))))))
+        nil))
+
+    ;; Taken from:
+    ;; reddit.com/r/emacs/comments/d7x7x8/finally_fixing_indentation_of_quoted_lists
+    (defun +emacs-lisp--calculate-lisp-indent-a (&optional parse-start)
+      "Add better indentation for quoted and backquoted lists."
+      ;; The `calculate-lisp-indent-last-sexp' is defined with `defvar' with it's
+      ;; value omitted, marking it special and only defining it locally. So if you
+      ;; don't have this, you'll get a void variable error.
+      (defvar calculate-lisp-indent-last-sexp)
+      (save-excursion
+        (beginning-of-line)
+        (let ((indent-point (point))
+              ;; Setting this to a number inhibits calling hook
+              (desired-indent nil)
+              (retry t)
+              state calculate-lisp-indent-last-sexp containing-sexp)
+          (cond ((or (markerp parse-start) (integerp parse-start))
+                 (goto-char parse-start))
+                ((null parse-start) (beginning-of-defun))
+                (t (setq state parse-start)))
+          (unless state
+            ;; Find outermost containing sexp
+            (while (< (point) indent-point)
+              (setq state (parse-partial-sexp (point) indent-point 0))))
+          ;; Find innermost containing sexp
+          (while (and retry state (> (elt state 0) 0))
+            (setq retry nil
+                  containing-sexp (elt state 1)
+                  calculate-lisp-indent-last-sexp (elt state 2))
+            ;; Position following last unclosed open.
+            (goto-char (1+ containing-sexp))
+            ;; Is there a complete sexp since then?
+            (if (and calculate-lisp-indent-last-sexp (> calculate-lisp-indent-last-sexp (point)))
+                ;; Yes, but is there a containing sexp after that?
+                (let ((peek (parse-partial-sexp calculate-lisp-indent-last-sexp indent-point 0)))
+                  (if (setq retry (car (cdr peek))) (setq state peek)))))
+          (unless retry
+            ;; Innermost containing sexp found
+            (goto-char (1+ containing-sexp))
+            (if (not calculate-lisp-indent-last-sexp)
+                ;; `indent-point' immediately follows open paren. Don't call hook.
+                (setq desired-indent (current-column))
+              ;; Find the start of first element of containing sexp.
+              (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t)
+              (cond ((looking-at "\\s("))
+                    ;; First element of containing sexp is a list. Indent under that
+                    ;; list.
+                    ((> (save-excursion (forward-line 1) (point)) calculate-lisp-indent-last-sexp)
+                     ;; This is the first line to start within the containing sexp.
+                     ;; It's almost certainly a function call.
+                     (if (or
+                          ;; Containing sexp has nothing before this line except the
+                          ;; first element. Indent under that element.
+                          (= (point) calculate-lisp-indent-last-sexp)
+
+                          ;; First sexp after `containing-sexp' is a keyword. This
+                          ;; condition is more debatable. It's so that I can have
+                          ;; unquoted plists in macros. It assumes that you won't
+                          ;; make a function whose name is a keyword.
+                          (and +calculate-lisp-indent-check-for-keyword
+                               (when-let (char-after (char-after (1+ containing-sexp)))
+                                 (char-equal char-after ?:)))
+
+                          ;; Check for quotes or backquotes around.
+                          (let* ((positions (elt state 9))
+                                 (last (car (last positions)))
+                                 (rest (reverse (butlast positions)))
+                                 (any-quoted-p nil)
+                                 (point nil))
+                            (or
+                             (when-let (char (char-before last))
+                               (or (char-equal char ?')
+                                   (char-equal char ?`)))
+                             (progn
+                               (while (and rest (not any-quoted-p))
+                                 (setq point (pop rest)
+                                       any-quoted-p
+                                       (or
+                                        (when-let (char (char-before point))
+                                          (or (char-equal char ?') (char-equal char ?`)))
+                                        (save-excursion
+                                          (goto-char (1+ point))
+                                          (looking-at-p "\\(?:back\\)?quote[\t\n\f\s]+(")))))
+                               any-quoted-p))))
+                         ;; Containing sexp has nothing before this line except the
+                         ;; first element. Indent under that element.
+                         nil
+                       ;; Skip the first element, find start of second (the first
+                       ;; argument of the function call) and indent under.
+                       (progn (forward-sexp 1)
+                              (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t)))
+                     (backward-prefix-chars))
+                    (t
+                     ;; Indent beneath first sexp on same line as
+                     ;; `calculate-lisp-indent-last-sexp'. Again, it's almost
+                     ;; certainly a function call.
+                     (goto-char calculate-lisp-indent-last-sexp)
+                     (beginning-of-line)
+                     (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t)
+                     (backward-prefix-chars)))))
+          ;; Point is at the point to indent under unless we are inside a string.
+          ;; Call indentation hook except when overridden by `lisp-indent-offset' or
+          ;; if the desired indentation has already been computed.
+          (let ((normal-indent (current-column)))
+            (cond ((elt state 3)
+                   ;; Inside a string, don't change indentation.
+                   nil)
+                  ((and (integerp lisp-indent-offset) containing-sexp)
+                   ;; Indent by constant offset
+                   (goto-char containing-sexp)
+                   (+ (current-column) lisp-indent-offset))
+                  ;; in this case `calculate-lisp-indent-last-sexp' is not `nil'
+                  (calculate-lisp-indent-last-sexp
+                   (or
+                    ;; try to align the parameters of a known function
+                    (and lisp-indent-function
+                         (not retry)
+                         (funcall lisp-indent-function indent-point state))
+                    ;; If the function has no special alignment or it does not apply
+                    ;; to this argument, try to align a constant-symbol under the
+                    ;; last preceding constant symbol, if there is such one of the
+                    ;; last 2 preceding symbols, in the previous uncommented line.
+                    (and (save-excursion
+                           (goto-char indent-point)
+                           (skip-chars-forward " \t")
+                           (looking-at ":"))
+                         ;; The last sexp may not be at the indentation where it
+                         ;; begins, so find that one, instead.
+                         (save-excursion
+                           (goto-char calculate-lisp-indent-last-sexp)
+                           ;; Handle prefix characters and whitespace following an
+                           ;; open paren. (Bug#1012)
+                           (backward-prefix-chars)
+                           (while (not (or (looking-back "^[ \t]*\\|([ \t]+" (line-beginning-position))
+                                           (and containing-sexp (>= (1+ containing-sexp) (point)))))
+                             (forward-sexp -1)
+                             (backward-prefix-chars))
+                           (setq calculate-lisp-indent-last-sexp (point)))
+                         (> calculate-lisp-indent-last-sexp
+                            (save-excursion
+                              (goto-char (1+ containing-sexp))
+                              (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t)
+                              (point)))
+                         (let ((parse-sexp-ignore-comments t)
+                               indent)
+                           (goto-char calculate-lisp-indent-last-sexp)
+                           (or (and (looking-at ":")
+                                    (setq indent (current-column)))
+                               (and (< (line-beginning-position) (prog2 (backward-sexp) (point)))
+                                    (looking-at ":")
+                                    (setq indent (current-column))))
+                           indent))
+                    ;; another symbols or constants not preceded by a constant as
+                    ;; defined above.
+                    normal-indent))
+                  ;; in this case `calculate-lisp-indent-last-sexp' is `nil'
+                  (desired-indent)
+                  (t
+                   normal-indent))))))
+
+    ;; Override the `calculate-lisp-indent' to indent plists correctly. See:
+    ;; reddit.com/r/emacs/comments/d7x7x8/finally_fixing_indentation_of_quoted_lists/
+    (advice-add 'calculate-lisp-indent :override #'+emacs-lisp--calculate-lisp-indent-a)
+
+    ;; Better fontification for Emacs Lisp code (colorizes functions, ...)
+    (font-lock-add-keywords 'emacs-lisp-mode '((+emacs-lisp--highlight-vars-and-faces . +emacs-lisp--face)))
+
+    ;; HACK: Adapted from Doom. Quite a few functions here are called often, and
+    ;; so are especially performance sensitive, so we compile these functions
+    ;; on-demand.
+    (+compile-functions #'+emacs-lisp--highlight-vars-and-faces #'+emacs-lisp--calculate-lisp-indent-a))
 #+end_src
 
 **** electric
@@ -916,6 +1400,114 @@ Select help window for faster quit!
     (electric-pair-mode))
 #+end_src
 
+**** abbrev
+#+begin_src emacs-lisp :lexical t
+  (use-package abbrev
+    :custom
+    (abbrev-file-name (concat my/cache-dir "abbrev.el")))
+#+end_src
+
+**** bookmark
+#+begin_src emacs-lisp :lexical t
+  (use-package bookmark
+    :custom
+    (bookmark-default-file (concat my/cache-dir "bookmark.el"))
+    ;; Save the bookmarks every time a bookmark is made
+    (bookmark-save-flag 1))
+#+end_src
+
+**** calc
+#+begin_src emacs-lisp :lexical t
+  (use-package calc
+    :custom
+    (calc-settings-file (concat my/cache-dir "calc-settings.el")))
+#+end_src
+
+**** desktop
+#+begin_src emacs-lisp :lexical t
+  (use-package desktop
+    :custom
+    ;; File name to use when saving desktop
+    (desktop-base-file-name "emacs-session.el")
+    ;; File name to use as a lock
+    (desktop-base-lock-name (concat desktop-base-file-name ".lock"))
+    ;; Load only 5 buffers immediately, the remaining buffers will be loaded lazily
+    (desktop-restore-eager 5)
+    ;; Avoid writing contents unchanged between auto-saves
+    (desktop-file-checksum t)
+    ;; Save buffer status
+    (desktop-save-buffer t))
+#+end_src
+
+**** recentf
+#+begin_src emacs-lisp
+  (use-package recentf
+    :demand t
+    :custom
+    (recentf-save-file (concat my/cache-dir "recentf-save.el"))
+    ;; Increase the maximum number of saved items
+    (recentf-max-saved-items 100)
+    ;; Ignore case when searching recentf files
+    (recentf-case-fold-search t)
+    ;; Exclude some files from being remembered by recentf
+    (recentf-exclude
+    `(,(rx (or "/elfeed-db/" "/eln-cache/" "/cache/" "/.maildir/" "/.cache/"))
+      ,(rx bol "/" (or "tmp/" "rsync:" "ssh:" "sudoedit:" "sudo:"))))
+    :config
+    ;; Enable `recentf-mode' to remember recent files
+    (recentf-mode 1))
+#+end_src
+
+**** url
+#+begin_src emacs-lisp :lexical t
+  (use-package url
+    :custom
+    (url-cache-directory (+directory-ensure my/cache-dir "url/"))
+    (url-configuration-directory (+directory-ensure my/cache-dir "url/"))
+    (url-cookie-file (concat my/cache-dir "url/cookie.el"))
+    (url-history-file (concat my/cache-dir "url/history.el")))
+#+end_src
+
+**** webjump
+#+begin_src emacs-lisp :lexical t
+  (use-package webjump
+    :custom
+    (webjump-sites
+    '(("Emacs Wiki"    . [simple-query "www.emacswiki.org" "www.emacswiki.org/cgi-bin/wiki/" ""])
+      ("DuckDuckGo"    . [simple-query "duckduckgo.com" "duckduckgo.com/?q=" ""])
+      ("Qwant"         . [simple-query "www.qwant.com" "www.qwant.com/?q=" ""])
+      ("Ecosia"        . [simple-query "www.ecosia.org" "www.ecosia.org/search?q=" ""])
+      ("Brave"         . [simple-query "search.brave.com" "search.brave.com/search?q=" ""])
+      ("Bing"          . [simple-query "www.bing.com" "www.bing.com/search?q=" ""])
+      ("Yahoo"         . [simple-query "www.yahoo.com" "search.yahoo.com/search?p=" ""])
+      ("Google"        . [simple-query "www.google.com" "www.google.com/search?q=" ""])
+      ("Google Maps"   . [simple-query "www.google.com" "www.google.com/maps?q=" ""])
+      ("Google Images" . [simple-query "www.google.com" "www.google.com/images?q=" ""])
+      ("Google Groups" . [simple-query "groups.google.com" "groups.google.com/groups?q=" ""])
+      ("StackOverflow" . [simple-query "stackoverflow.com" "stackoverflow.com/search?q=" ""])
+      ("GitHub Repo"   . [simple-query "github.com" "github.com/search?type=repositories&q=" ""])
+      ("GitHub Code"   . [simple-query "github.com" "github.com/search?type=code&q=" ""])
+      ("WolframAlpha"  . [simple-query "wolframalpha.com" "wolframalpha.com/input/?i=" ""])
+      ("MDN"           . [simple-query "developer.mozilla.org" "developer.mozilla.org/search?q=" ""])
+      ("Youtube"       . [simple-query "www.youtube.com" "www.youtube.com/results?search_query=" ""])
+      ("Reddit"        . [simple-query "www.reddit.com" "www.reddit.com/search/?q=" ""])
+      ("Wikipedia"     . [simple-query "wikipedia.org" "wikipedia.org/wiki/" ""]))))
+#+end_src
+
+**** time-stamp
+#+begin_src emacs-lisp :lexical t
+  (use-package time-stamp
+    ;; Update time stamp (if available) before saving a file.
+    :hook (before-save . time-stamp)
+    :custom
+    ;; Do enable time-stamps
+    (time-stamp-active t)
+    ;; Check the first 12 buffer lines for Time-stamp: <>
+    (time-stamp-line-limit 12)
+    ;; Timestamp format
+    (time-stamp-format "%04Y-%02m-%02d %02H:%02M:%02S"))
+#+end_src
+
 **** whitespace
 #+begin_src emacs-lisp :lexical t
   (use-package whitespace
@@ -926,13 +1518,12 @@ Select help window for faster quit!
 
 **** autorevert
 #+begin_src emacs-lisp :lexical t
-  (use-package autorevert
-    ;; Auto load files changed on disk
-    :init
-    (global-auto-revert-mode)
-    :custom
-    ;; Revert non-file buffers like dired
-    (global-auto-revert-non-file-buffers t))
+(use-package autorevert
+  ;; Auto load files changed on disk
+  :hook (minemacs-first-file . global-auto-revert-mode)
+  :custom
+  ;; Revert non-file buffers like dired
+  (global-auto-revert-non-file-buffers t))
 #+end_src
 
 **** savehist
@@ -952,11 +1543,27 @@ Select help window for faster quit!
     (save-place-file (concat my/cache-dir "save-place.el")))
 #+end_src
 
+**** term
+#+begin_src emacs-lisp :lexical t
+(use-package term
+  :config
+  ;; Kill `term' buffer on exit (reproduce a similar behavior to `shell's
+  ;; `shell-kill-buffer-on-exit').
+  (advice-add
+   'term-sentinel :around
+   (defun +term--kill-after-exit-a (orig-fn proc msg)
+     (if (memq (process-status proc) '(signal exit))
+         (let ((buffer (process-buffer proc)))
+           (apply orig-fn (list proc msg))
+           (kill-buffer buffer))
+       (apply orig-fn (list proc msg))))))
+#+end_src
+
 **** excutable
-Make scripts (files starting with shebang "#!") executable when saved
 #+begin_src emacs-lisp :lexicalt
-  (use-package executable
-    :hook (after-save . executable-make-buffer-file-executable-if-script-p))
+(use-package executable
+  ;; Make scripts (files starting with shebang "#!") executable when saved
+  :hook (after-save . executable-make-buffer-file-executable-if-script-p))
 #+end_src
 
 **** display-line-numbers
@@ -1010,28 +1617,58 @@ Make scripts (files starting with shebang "#!") executable when saved
     (mouse-wheel-scroll-amount '(2 ((shift) . hscroll) ((meta) . nil) ((control meta) . global-text-scale) ((control) . text-scale)))
     ;; Make mouse scroll a little faster horizontally
     (mouse-wheel-scroll-amount-horizontal 2))
+
+  (use-package xt-mouse
+    :hook (tty-setup . xterm-mouse-mode))
+#+end_src
+
+**** frame
+#+begin_src emacs-lisp :lexical t
+(use-package frame
+  ;; Display divider between windows
+  :init (window-divider-mode)
+  :custom
+  ;; Set line width for the divider in `window-divider-mode' to 2px
+  (window-divider-default-bottom-width 2)
+  (window-divider-default-right-width 2))
 #+end_src
 
 **** winner
-Window layout undo/redo (`winner-undo' / `winner-redo')
 #+begin_src emacs-lisp :lexical t
 (use-package winner
-  :hook (minemacs-after-startup . winner-mode))
+  ;; Window layout undo/redo (`winner-undo' / `winner-redo')
+  :init (winner-mode))
+#+end_src
+
+**** delsel
+#+begin_src emacs-lisp :lexical t
+(use-package delsel
+  ;; Replace selection after start typing
+  :init (delete-selection-mode))
 #+end_src
 
 **** so-long
-Better handling for files with so long lines
 #+begin_src emacs-lisp :lexical t
 (use-package so-long
+  ;; Better handling for files with so long lines
   :init (global-so-long-mode))
 #+end_src
 
+**** windmove
+#+begin_src emacs-lisp :lexical t
+(use-package windmove
+  :demand t
+  :config
+  ;; Navigate windows using Shift+Direction
+  (windmove-default-keybindings 'shift))
+#+end_src
+
 **** pulse
-Add visual pulse when changing focus, like beacon but built-in
-From: https://karthinks.com/software/batteries-included-with-emacs/
 #+begin_src emacs-lisp :lexical t
 (use-package pulse
   :init
+  ;; Add visual pulse when changing focus, like beacon but built-in
+  ;; From: https://karthinks.com/software/batteries-included-with-emacs/
   (defun +pulse-line (&rest _)
     "Pulse the current line."
     (pulse-momentary-highlight-one-line (point)))
@@ -1039,17 +1676,8 @@ From: https://karthinks.com/software/batteries-included-with-emacs/
     (advice-add command :after #'+pulse-line)))
 #+end_src
 
-**** Fonts
-The configured font needs to support the unicode characters that are used by the modeline.
-The default font is good enough so let's not define additonal configuration here.
-#+begin_src emacs-lisp :lexical t
-(push '(font . "IBM Plex Mono-18") default-frame-alist)
-(set-face-font 'default "IBM Plex Mono-18")
-(set-face-font 'variable-pitch "DejaVu Sans")
-(copy-face 'default 'fixed-pitch)
-#+end_src
-
-*** Package Manager
+* Packages
+** Package Manager
 **** Elpaca
 Elpaca is an elisp package manager. It allows users to find, install, update, and remove third-party packages for Emacs. It is a replacement for the built-in Emacs package manager, package.el
 Github: https://github.com/progfolio/elpaca
@@ -1132,7 +1760,6 @@ Since I don't do that often I expect this to be commented out most of the time.
       "http://melpa.org/packages/"))
   (package-initialize)
 #+end_src
-* Packages
 ** Evil (Like vim)
 #+begin_quote
 Evil is an extensible vi layer for Emacs. It emulates the main features of Vim, and provides facilities for writing custom extensions.
@@ -1359,7 +1986,7 @@ We define a global-leader definer to access major-mode specific bindings:
     "ft"   #'recover-this-file
     "fT"   #'recover-file
     "fy"   #'+yank-this-file-name
-    "fE"   `(,(+cmdfy! (dired (or minemacs-config-dir minemacs-root-dir)))
+    "fE"   `(,(+cmdfy! (dired (or my/emacs-dir minemacs-root-dir)))
              :wk "User config directory")
 
     ;; ====== Buffers ======
@@ -1474,7 +2101,7 @@ We define a global-leader definer to access major-mode specific bindings:
   )
 #+end_src
 
-;; Exit minibuffer from anywhere
+Exit minibuffer from anywhere
 #+begin_src emacs-lisp :lexical t
   ;; Kill the minibuffer even when in another windown.
   ;; Adapted from: trey-jackson.blogspot.com/2010/04/emacs-tip-36-abort-minibuffer-when.html
@@ -1488,6 +2115,16 @@ We define a global-leader definer to access major-mode specific bindings:
 #+end_src
 
 ** UI
+*** Fonts
+The configured font needs to support the unicode characters that are used by the modeline.
+The default font is good enough so let's not define additonal configuration here.
+#+begin_src emacs-lisp :lexical t
+(push '(font . "IBM Plex Mono-18") default-frame-alist)
+(set-face-font 'default "IBM Plex Mono-18")
+(set-face-font 'variable-pitch "DejaVu Sans")
+(copy-face 'default 'fixed-pitch)
+#+end_src
+
 *** Theme
 I prefer to keep my themes in a sub-folder of =~/.emacs.d=
 #+begin_src emacs-lisp :lexical t
@@ -1953,6 +2590,54 @@ https://github.com/seagle0128/doom-modeline
     :bind ("M-R" . vertico-repeat))
 #+end_src
 
+** Eglot
+#+begin_src emacs-lisp :lexical t
+  (use-package eglot
+    :hook (eglot-managed-mode . eglot-inlay-hints-mode)
+    :custom
+    (eglot-autoshutdown t) ; shutdown after closing the last managed buffer
+    (eglot-sync-connect 0) ; async, do not block
+    (eglot-extend-to-xref t) ; can be interesting!
+    (eglot-report-progress nil) ; disable annoying messages in echo area!
+    :config
+    (+map! :keymaps 'eglot-mode-map
+      :infix "c"
+      "fF" #'eglot-format-buffer
+      "d"  '(eglot-find-declaration :wk "Find declaration")
+      "i"  '(eglot-find-implementation :wk "Find implementation")
+      "t"  '(eglot-find-typeDefinition :wk "Find type definition")
+      "a"  '(eglot-code-actions :wk "Code actions")
+      "r"  '(nil :wk "refactor")
+      "rr" '(eglot-rename :wk "Rename")
+      "rR" '(eglot-code-action-rewrite :wk "Rewrite")
+      "rf" '(eglot-code-action-quickfix :wk "Quick fix")
+      "ri" '(eglot-code-action-inline :wk "Inline")
+      "re" '(eglot-code-action-extract :wk "Extract")
+      "ro" '(eglot-code-action-organize-imports :wk "Organize imports")
+      "eq" '(eglot-shutdown :wk "Shutdown")
+      "er" '(eglot-reconnect :wk "Reconnect")
+      "eQ" '(eglot-shutdown-all :wk "Shutdown all")
+      "w"  '(eglot-show-workspace-configuration :wk "Eglot workspace config"))
+
+    (+eglot-register
+      '(c++-mode c++-ts-mode c-mode c-ts-mode)
+      '("clangd"
+        "--background-index"
+        "-j=12"
+        "--query-driver=/usr/bin/**/clang-*,/bin/clang,/bin/clang++,/usr/bin/gcc,/usr/bin/g++"
+        "--clang-tidy"
+        ;; "--clang-tidy-checks=*"
+        "--all-scopes-completion"
+        "--cross-file-rename"
+        "--completion-style=detailed"
+        "--header-insertion-decorators"
+        "--header-insertion=iwyu"
+        "--pch-storage=memory")
+      "ccls")
+
+    (+eglot-register '(awk-mode awk-ts-mode) "awk-language-server"))
+#+end_src
+
 ** Lang
 *** Nix
 #+begin_src emacs-lisp :lexical t
@@ -1983,6 +2668,264 @@ https://github.com/seagle0128/doom-modeline
       "e"  #'markdown-export))
 #+end_src
 *** Org-mode
+**** org
+#+begin_src emacs-lisp :lexical t
+  (use-feature org
+    :preface
+    ;; Set to nil so we can detect user changes (in config.el)
+    (setq org-directory nil
+          ;; Fix `evil' search problem (to be used with `evil-search')
+          org-fold-core-style 'overlays)
+    :custom
+    (org-auto-align-tags nil)
+    (org-clock-persist-file (concat my/cache-dir "org/clock-persist.el"))
+    (org-cycle-hide-block-startup t)
+    (org-edit-src-auto-save-idle-delay auto-save-timeout) ; use the defaults
+    (org-edit-src-content-indentation 0) ; do not indent the content of src blocks
+    (org-edit-src-turn-on-auto-save t) ; auto-save org-edit-src
+    (org-ellipsis " ↩")
+    (org-export-async-init-file (expand-file-name (concat my/cache-dir "extras/me-org-export-async-init.el")))
+    (org-export-in-background t) ; run export processes in external emacs process
+    (org-export-with-broken-links 'mark) ; Do not rise error on broken links, but mark them in the output file
+    (org-export-with-smart-quotes t) ; convert "this" to « this »
+    (org-export-with-sub-superscripts '{}) ; Only explicit _{} ^{} are interpreted as sub/superscripts
+    (org-fold-catch-invisible-edits 'smart) ; try not to accidentally do weird stuff in invisible regions
+    (org-fontify-quote-and-verse-blocks t)
+    (org-hide-emphasis-markers t)
+    (org-highlight-latex-and-related '(native script entities))
+    (org-id-locations-file (concat my/cache-dir "org/id-locations.el"))
+    (org-insert-heading-respect-content t)
+    (org-list-allow-alphabetical t) ; have a. A. a) A) list bullets
+    (org-log-done 'time) ; having the time an item is done sounds convenient
+    (org-persist-directory (+directory-ensure my/cache-dir "org/persist/"))
+    (org-pretty-entities t)
+    (org-pretty-entities-include-sub-superscripts t)
+    (org-preview-latex-image-directory (+directory-ensure my/cache-dir "org/preview/latex-image/"))
+    (org-publish-timestamp-directory (+directory-ensure my/cache-dir "org/publish/timestamps/"))
+    (org-return-follows-link t) ; RET follows link (a key bind has to be defined for Evil, see below)
+    (org-special-ctrl-a/e t)
+    (org-startup-indented nil)
+    (org-tags-column 0)
+    (org-use-property-inheritance t) ; it's convenient to have properties inherited
+    (org-use-sub-superscripts '{}) ; Do the same when rendering the Org buffer
+    :config
+    (+map-local! :keymaps 'org-mode-map
+      "l"  '(nil :wk "link")
+      "ll" #'org-insert-link
+      "e"  #'org-export-dispatch
+      "c"  #'org-edit-src-code
+      "s"  '(nil :wk "babel-session")
+      "sc" #'org-babel-switch-to-session-with-code
+      "ss" #'org-babel-switch-to-session
+      "sp" #'org-babel-pop-to-session
+      "sP" #'org-babel-pop-to-session-maybe
+      "sl" #'org-babel-load-in-session
+      "sL" #'org-babel-load-in-session-maybe
+      "si" #'org-babel-initiate-session
+      "b"  '(nil :wk "babel")
+      "bt" #'org-babel-tangle
+      "bd" #'org-babel-detangle
+      "bf" #'org-babel-tangle-file)
+    (+map-local! :keymaps 'org-src-mode-map
+      "s" #'org-edit-src-save
+      "q" #'org-edit-src-abort
+      "e" #'org-edit-src-exit)
+    (+nmap! :keymaps 'org-mode-map
+      "RET" #'org-open-at-point)
+
+    (setq org-export-async-debug nil) ;; Can be useful!
+
+    ;; Dynamically change font size for Org heading levels, starting from
+    ;; `+org-level-base-size', and shrinking by a factor of 0.9 at each level.
+    (defvar +org-level-base-size 1.3)
+
+    (dotimes (level 8)
+      (let ((size (max 1.0 (* +org-level-base-size (expt 0.9 level)))))
+        (set-face-attribute
+         (intern (format "org-level-%d" (1+ level))) nil
+         :weight 'bold
+         :height size)))
+
+    (org-babel-do-load-languages
+     'org-babel-load-languages
+     (cl-loop
+      for lang in '(C R js dot awk sed sql org shell ditaa latex julia sqlite octave
+                    maxima eshell scheme python fortran gnuplot plantuml makefile)
+      collect (cons lang t)))
+
+    (with-eval-after-load 'org-src
+      (setq org-src-lang-modes
+            (append
+             '(("dot" . graphviz-dot))
+             (delete (assoc "dot" org-src-lang-modes #'equal) org-src-lang-modes))))
+
+    (with-eval-after-load 'plantuml-mode
+      (setq org-plantuml-jar-path plantuml-jar-path
+            org-plantuml-exec-mode plantuml-default-exec-mode
+            org-plantuml-executable-path plantuml-executable-path))
+
+    ;; From Doom Emacs
+    (with-no-warnings
+      (custom-declare-face '+org-todo-active  '((t (:inherit (bold font-lock-constant-face org-todo)))) "")
+      (custom-declare-face '+org-todo-project '((t (:inherit (bold font-lock-doc-face org-todo)))) "")
+      (custom-declare-face '+org-todo-onhold  '((t (:inherit (bold warning org-todo)))) "")
+      (custom-declare-face '+org-todo-cancel  '((t (:inherit (bold error org-todo)))) ""))
+
+    (setq org-todo-keywords
+          '((sequence
+             "TODO(t)"  ; A task that needs doing & is ready to do
+             "PROJ(p)"  ; A project, which usually contains other tasks
+             "LOOP(r)"  ; A recurring task
+             "STRT(s)"  ; A task that is in progress
+             "WAIT(w)"  ; Something external is holding up this task
+             "HOLD(h)"  ; This task is paused/on hold because of me
+             "IDEA(i)"  ; An unconfirmed and unapproved task or notion
+             "|"
+             "DONE(d)"  ; Task successfully completed
+             "KILL(k)") ; Task was cancelled, aborted or is no longer applicable
+            (sequence
+             "[ ](T)"   ; A task that needs doing
+             "[-](S)"   ; Task is in progress
+             "[?](W)"   ; Task is being held up or paused
+             "|"
+             "[X](D)")  ; Task was completed
+            (sequence
+             "|"
+             "OKAY(o)"
+             "YES(y)"
+             "NO(n)"))
+          org-todo-keyword-faces
+          '(("[-]"  . +org-todo-active)
+            ("STRT" . +org-todo-active)
+            ("[?]"  . +org-todo-onhold)
+            ("WAIT" . +org-todo-onhold)
+            ("HOLD" . +org-todo-onhold)
+            ("PROJ" . +org-todo-project)
+            ("NO"   . +org-todo-cancel)
+            ("KILL" . +org-todo-cancel))))
+#+end_src
+
+**** org-agenda
+#+begin_src emacs-lisp :lexical t
+  (use-feature org-agenda
+    :custom
+    (org-agenda-tags-column 0)
+    (org-agenda-block-separator ?─)
+    (org-agenda-time-grid
+    '((daily today require-timed)
+      (800 1000 1200 1400 1600 1800 2000)
+      " ┄┄┄┄┄ " "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"))
+    (org-agenda-current-time-string
+    "⭠ now ─────────────────────────────────────────────────"))
+#+end_src
+
+**** org-indent
+;; TEMP: This will solve the "Invalid face reference: org-indent [X times]"
+;; problem.
+#+begin_src emacs-lisp :lexical t
+  (use-feature org-indent
+    :after org
+    :demand t)
+#+end_src
+
+**** ox
+#+begin_src emacs-lisp :lexical t
+  (use-feature ox
+    :after org)
+
+  (use-feature ox-latex
+    :after ox
+    :custom
+    (org-latex-src-block-backend 'engraved)
+    (org-latex-prefer-user-labels t)
+    (org-latex-tables-booktabs t)
+    ;; Default `minted` options, can be overwritten in file/dir locals
+    (org-latex-minted-options
+    '(("frame"         "lines")
+      ("fontsize"      "\\footnotesize")
+      ("tabsize"       "2")
+      ("breaklines"    "true")
+      ("breakanywhere" "true") ;; break anywhere, no just on spaces
+      ("style"         "default")
+      ("bgcolor"       "GhostWhite")
+      ("linenos"       "true")))
+    :config
+    ;; (setq org-latex-line-break-safe "\\\\")
+    ;; Add this to your config to be able to export with minted:
+    ;; (with-eval-after-load 'ox-latex
+    ;;   (add-to-list 'org-latex-packages-alist '("" "minted"))
+    ;;   (add-to-list 'org-latex-packages-alist '("svgnames" "xcolor"))
+    ;;   (setq org-latex-src-block-backend 'minted
+    ;;         org-latex-pdf-process '("latexmk -f -pdf -%latex -shell-escape -interaction=nonstopmode -output-directory=%o %f")))
+
+    ;; Map some org-mode blocks' languages to lexers supported by minted
+    ;; you can see supported lexers by running this command in a terminal:
+    ;; 'pygmentize -L lexers'
+    (dolist (pair '((ipython    "python")
+                    (jupyter    "python")
+                    (scheme     "scheme")
+                    (lisp-data  "lisp")
+                    (conf-unix  "unixconfig")
+                    (conf-space "unixconfig")
+                    (authinfo   "unixconfig")
+                    (gdb-script "unixconfig")
+                    (conf-toml  "yaml")
+                    (conf       "ini")
+                    (gitconfig  "ini")
+                    (systemd    "ini")))
+      (unless (member pair org-latex-minted-langs)
+        (add-to-list 'org-latex-minted-langs pair)))
+
+    (cond
+    ((executable-find "latexmk")
+      (setq
+      org-latex-pdf-process
+      '("latexmk -c -bibtex-cond1 %f" ; ensure cleaning ".bbl" files
+        "latexmk -f -pdf -%latex -shell-escape -interaction=nonstopmode -output-directory=%o %f")))
+    ;; NOTE: Tectonic might have some issues with some documents (sagej + natbib)
+    ((executable-find "tectonic")
+      (setq
+      org-latex-pdf-process
+      '("tectonic -X compile --outdir=%o -Z shell-escape -Z continue-on-errors %f")))))
+
+  (use-feature ox-koma-letter
+    :after ox
+    :demand t)
+
+  (use-feature ox-odt
+    :after ox
+    :demand t)
+
+  (use-feature ox-beamer
+    :after ox
+    :demand t)
+#+end_src
+
+**** oc
+#+begin_src emacs-lisp :lexical t
+  (use-feature oc
+    :after org
+    :demand t
+    :custom
+    (org-cite-export-processors '((latex biblatex) (t csl)))
+    (org-support-shift-select t)
+    :config
+    (+map-local! :keymaps 'org-mode-map
+      "C" #'org-cite-insert))
+
+  (use-feature oc-csl
+    :after oc
+    :demand t)
+
+  (use-feature oc-natbib
+    :after oc
+    :demand t)
+
+  (use-feature oc-biblatex
+    :after oc
+    :demand t)
+#+end_src
+
 **** toc-org
 #+begin_src emacs-lisp :lexical t
   (use-package toc-org
